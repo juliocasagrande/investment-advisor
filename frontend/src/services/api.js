@@ -12,7 +12,7 @@ const api = axios.create({
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) {
-    config.headers.Authorization = \Bearer \\;
+    config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
@@ -41,17 +41,17 @@ export const authService = {
 export const classesService = {
   list: () => api.get('/classes'),
   create: (data) => api.post('/classes', data),
-  update: (id, data) => api.put(\/classes/\\, data),
-  delete: (id) => api.delete(\/classes/\\),
+  update: (id, data) => api.put(`/classes/${id}`, data),
+  delete: (id) => api.delete(`/classes/${id}`),
 };
 
 export const assetsService = {
   list: (classId) => api.get('/assets', { params: { classId } }),
-  get: (id) => api.get(\/assets/\\),
+  get: (id) => api.get(`/assets/${id}`),
   create: (data) => api.post('/assets', data),
-  update: (id, data) => api.put(\/assets/\\, data),
-  delete: (id) => api.delete(\/assets/\\),
-  registerTransaction: (id, data) => api.post(\/assets/\/transaction\, data),
+  update: (id, data) => api.put(`/assets/${id}`, data),
+  delete: (id) => api.delete(`/assets/${id}`),
+  registerTransaction: (id, data) => api.post(`/assets/${id}/transaction`, data),
 };
 
 export const transactionsService = {
@@ -66,7 +66,7 @@ export const portfolioService = {
   getProjection: (months, monthlyContribution) => 
     api.get('/portfolio/projection', { params: { months, monthlyContribution } }),
   getHistory: (params) => api.get('/portfolio/history', { params }),
-  dismissRecommendation: (id) => api.post(\/portfolio/recommendations/\/dismiss\),
+  dismissRecommendation: (id) => api.post(`/portfolio/recommendations/${id}/dismiss`),
 };
 
 export const settingsService = {
