@@ -91,7 +91,10 @@ export default function Portfolio() {
     );
   }
 
-  const allocation = data?.allocation || [];
+  // O backend retorna { allocation: { totalValue, allocation: [...] }, suggestions: [...] }
+  // Então precisamos acessar data.allocation.allocation para obter o array
+  const allocationData = data?.allocation || {};
+  const allocation = allocationData.allocation || [];
   const suggestions = data?.suggestions || [];
   const totalTarget = classes.reduce((sum, c) => sum + parseFloat(c.target_percentage || 0), 0);
 
@@ -117,7 +120,7 @@ export default function Portfolio() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="stat-card bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border-emerald-500/20">
           <p className="text-2xl font-bold text-white">
-            {formatCurrency(allocation.reduce((s, a) => s + (a.currentValue || 0), 0))}
+            {formatCurrency(allocationData.totalValue || 0)}
           </p>
           <p className="text-xs text-slate-400 mt-1">Valor Total</p>
         </div>
