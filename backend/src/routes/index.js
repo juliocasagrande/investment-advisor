@@ -26,6 +26,7 @@ router.put('/auth/password', authMiddleware, authController.changePassword);
 
 // ==================== ASSET CLASSES ====================
 router.get('/classes', authMiddleware, assetsController.listClasses);
+router.get('/classes/templates', authMiddleware, assetsController.getClassTemplates);
 router.post('/classes', authMiddleware, assetsController.createClass);
 router.put('/classes/:id', authMiddleware, assetsController.updateClass);
 router.delete('/classes/:id', authMiddleware, assetsController.deleteClass);
@@ -40,6 +41,8 @@ router.post('/assets/:id/transaction', authMiddleware, assetsController.register
 
 // ==================== TRANSACTIONS ====================
 router.get('/transactions', authMiddleware, assetsController.listTransactions);
+router.post('/transactions', authMiddleware, assetsController.createTransaction);
+router.get('/transactions/realized-gains', authMiddleware, assetsController.getRealizedGains);
 
 // ==================== PORTFOLIO ====================
 router.get('/portfolio/dashboard', authMiddleware, portfolioController.getDashboard);
@@ -49,6 +52,10 @@ router.post('/portfolio/contribution', authMiddleware, portfolioController.calcu
 router.get('/portfolio/projection', authMiddleware, portfolioController.getProjection);
 router.get('/portfolio/history', authMiddleware, portfolioController.getHistory);
 router.post('/portfolio/recommendations/:id/dismiss', authMiddleware, portfolioController.dismissRecommendation);
+
+// ==================== MACRO ANALYSIS ====================
+router.get('/portfolio/macro', authMiddleware, portfolioController.getMacroAnalysis);
+router.post('/portfolio/macro/refresh', authMiddleware, portfolioController.refreshMacroAnalysis);
 
 // ==================== SETTINGS ====================
 router.get('/settings', authMiddleware, settingsController.getSettings);

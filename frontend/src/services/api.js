@@ -1,4 +1,4 @@
-﻿import axios from 'axios';
+import axios from 'axios';
 
 const API_URL = 'https://investment-advisor-production.up.railway.app/api';
 
@@ -40,6 +40,7 @@ export const authService = {
 
 export const classesService = {
   list: () => api.get('/classes'),
+  getTemplates: () => api.get('/classes/templates'),
   create: (data) => api.post('/classes', data),
   update: (id, data) => api.put(`/classes/${id}`, data),
   delete: (id) => api.delete(`/classes/${id}`),
@@ -56,6 +57,8 @@ export const assetsService = {
 
 export const transactionsService = {
   list: (params) => api.get('/transactions', { params }),
+  create: (data) => api.post('/transactions', data),
+  getRealizedGains: (params) => api.get('/transactions/realized-gains', { params }),
 };
 
 export const portfolioService = {
@@ -67,6 +70,8 @@ export const portfolioService = {
     api.get('/portfolio/projection', { params: { months, monthlyContribution } }),
   getHistory: (params) => api.get('/portfolio/history', { params }),
   dismissRecommendation: (id) => api.post(`/portfolio/recommendations/${id}/dismiss`),
+  getMacroAnalysis: () => api.get('/portfolio/macro'),
+  refreshMacroAnalysis: () => api.post('/portfolio/macro/refresh'),
 };
 
 export const settingsService = {

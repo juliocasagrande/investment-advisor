@@ -29,6 +29,8 @@ const migrate = async () => {
         color VARCHAR(7) DEFAULT '#3B82F6',
         description TEXT,
         expected_yield DECIMAL(5,2),
+        icon VARCHAR(50) DEFAULT 'Wallet',
+        category VARCHAR(50) DEFAULT 'other',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, name)
@@ -36,7 +38,7 @@ const migrate = async () => {
     `);
     console.log('✅ Tabela asset_classes criada');
 
-    // Tabela de ativos
+    // Tabela de ativos com campos expandidos
     await client.query(`
       CREATE TABLE IF NOT EXISTS assets (
         id SERIAL PRIMARY KEY,
@@ -53,6 +55,22 @@ const migrate = async () => {
         dividend_yield DECIMAL(5,2),
         last_update TIMESTAMP,
         notes TEXT,
+        -- Campos específicos para Renda Fixa
+        fixed_income_type VARCHAR(50),
+        indexer VARCHAR(20),
+        rate DECIMAL(8,4),
+        maturity_date DATE,
+        issuer VARCHAR(255),
+        -- Campos específicos para FIIs/REITs
+        sector VARCHAR(100),
+        -- Campos específicos para Cripto
+        wallet_address VARCHAR(255),
+        network VARCHAR(50),
+        -- Campos para valor presente
+        present_value DECIMAL(15,2),
+        present_value_date TIMESTAMP,
+        -- Metadados
+        extra_data JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, ticker)
@@ -60,7 +78,7 @@ const migrate = async () => {
     `);
     console.log('✅ Tabela assets criada');
 
-    // Tabela de transações
+    // Tabela de transações com lucro/prejuízo realizado
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id SERIAL PRIMARY KEY,
@@ -72,12 +90,15 @@ const migrate = async () => {
         total DECIMAL(15,2) NOT NULL,
         date DATE NOT NULL,
         notes TEXT,
+        average_cost_at_sale DECIMAL(15,2),
+        realized_gain DECIMAL(15,2),
+        realized_gain_percent DECIMAL(8,4),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
     console.log('✅ Tabela transactions criada');
 
-    // Tabela de histórico de portfólio (snapshots diários)
+    // Tabela de histórico de portfólio
     await client.query(`
       CREATE TABLE IF NOT EXISTS portfolio_history (
         id SERIAL PRIMARY KEY,
@@ -88,6 +109,7 @@ const migrate = async () => {
         total_gain DECIMAL(15,2) NOT NULL,
         gain_percentage DECIMAL(8,4),
         monthly_income DECIMAL(15,2),
+        realized_gains DECIMAL(15,2) DEFAULT 0,
         snapshot JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, date)
@@ -106,6 +128,7 @@ const migrate = async () => {
         monthly_contribution DECIMAL(15,2) DEFAULT 0,
         brapi_token VARCHAR(255),
         alphavantage_key VARCHAR(255),
+        grok_api_key VARCHAR(255),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
@@ -124,6 +147,7 @@ const migrate = async () => {
         action_data JSONB,
         is_read BOOLEAN DEFAULT FALSE,
         is_dismissed BOOLEAN DEFAULT FALSE,
+        source VARCHAR(50) DEFAULT 'system',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         expires_at TIMESTAMP
       );
@@ -148,6 +172,22 @@ const migrate = async () => {
     `);
     console.log('✅ Tabela quotes_cache criada');
 
+    // Tabela para análises de cenário macro
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS macro_analysis (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        analysis_date DATE NOT NULL,
+        scenarios JSONB NOT NULL,
+        allocation_suggestion JSONB,
+        summary TEXT,
+        source VARCHAR(50) DEFAULT 'grok',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, analysis_date)
+      );
+    `);
+    console.log('✅ Tabela macro_analysis criada');
+
     // Índices para performance
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_assets_user ON assets(user_id);
@@ -160,6 +200,38 @@ const migrate = async () => {
     `);
     console.log('✅ Índices criados');
 
+    // Adicionar colunas se não existirem (para migração de bancos existentes)
+    const alterStatements = [
+      "ALTER TABLE asset_classes ADD COLUMN IF NOT EXISTS icon VARCHAR(50) DEFAULT 'Wallet'",
+      "ALTER TABLE asset_classes ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'other'",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS fixed_income_type VARCHAR(50)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS indexer VARCHAR(20)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS rate DECIMAL(8,4)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS maturity_date DATE",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS issuer VARCHAR(255)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS sector VARCHAR(100)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(255)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS network VARCHAR(50)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS present_value DECIMAL(15,2)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS present_value_date TIMESTAMP",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS extra_data JSONB",
+      "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS average_cost_at_sale DECIMAL(15,2)",
+      "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS realized_gain DECIMAL(15,2)",
+      "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS realized_gain_percent DECIMAL(8,4)",
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS grok_api_key VARCHAR(255)",
+      "ALTER TABLE portfolio_history ADD COLUMN IF NOT EXISTS realized_gains DECIMAL(15,2) DEFAULT 0",
+      "ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'system'"
+    ];
+
+    for (const stmt of alterStatements) {
+      try {
+        await client.query(stmt);
+      } catch (e) {
+        // Ignora erros de coluna já existente
+      }
+    }
+    console.log('✅ Colunas adicionais verificadas');
+
     console.log('\n🎉 Migração concluída com sucesso!');
 
   } catch (error) {
@@ -170,7 +242,6 @@ const migrate = async () => {
   }
 };
 
-// Executar se chamado diretamente
 if (require.main === module) {
   migrate()
     .then(() => process.exit(0))

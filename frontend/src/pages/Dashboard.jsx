@@ -13,7 +13,9 @@ import {
   Zap,
   ArrowUpRight,
   ArrowDownRight,
-  Clock
+  Sparkles,
+  Target,
+  ChevronRight
 } from 'lucide-react';
 import {
   PieChart as RechartsPie,
@@ -24,7 +26,9 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  ResponsiveContainer
+  ResponsiveContainer,
+  BarChart,
+  Bar
 } from 'recharts';
 import toast from 'react-hot-toast';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -34,6 +38,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [refreshingMacro, setRefreshingMacro] = useState(false);
   const [data, setData] = useState(null);
 
   useEffect(() => {
@@ -44,10 +49,11 @@ export default function Dashboard() {
     try {
       setLoading(true);
       const response = await portfolioService.getDashboard();
-      setData(response.data);
+      setData(response.data || {});
     } catch (error) {
       toast.error('Erro ao carregar dashboard');
       console.error(error);
+      setData({});
     } finally {
       setLoading(false);
     }
@@ -59,7 +65,8 @@ export default function Dashboard() {
 
     try {
       const response = await portfolioService.sync();
-      toast.success(`Sincronização concluída! ${response.data.results.quotes.success} cotações atualizadas`, {
+      const quotesSuccess = response.data?.results?.quotes?.success || 0;
+      toast.success(`Sincronização concluída! ${quotesSuccess} cotações atualizadas`, {
         id: toastId
       });
       await loadDashboard();
@@ -71,12 +78,28 @@ export default function Dashboard() {
     }
   };
 
+  const handleRefreshMacro = async () => {
+    setRefreshingMacro(true);
+    try {
+      const response = await portfolioService.refreshMacroAnalysis();
+      setData(prev => ({
+        ...prev,
+        macroAnalysis: response.data
+      }));
+      toast.success('Análise macro atualizada!');
+    } catch (error) {
+      toast.error('Erro ao atualizar análise');
+    } finally {
+      setRefreshingMacro(false);
+    }
+  };
+
   const dismissRecommendation = async (id) => {
     try {
       await portfolioService.dismissRecommendation(id);
       setData(prev => ({
         ...prev,
-        recommendations: prev.recommendations.filter(r => r.id !== id)
+        recommendations: (prev?.recommendations || []).filter(r => r.id !== id)
       }));
     } catch (error) {
       toast.error('Erro ao dispensar recomendação');
@@ -102,7 +125,51 @@ export default function Dashboard() {
     );
   }
 
-  const { summary, allocation, recommendations, history } = data || {};
+  const summary = data?.summary || {};
+  const allocation = data?.allocation || [];
+  const recommendations = data?.recommendations || [];
+  const history = data?.history || [];
+  const macroAnalysis = data?.macroAnalysis || {};
+
+  const allocationWithValue = allocation.filter(a => (a.currentValue || 0) > 0);
+
+  // Preparar dados para gráfico de alocação sugerida
+  const suggestedAllocationData = Object.entries(macroAnalysis.allocation || {}).map(([name, value]) => ({
+    name,
+    value,
+    fill: getColorForClass(name)
+  }));
+
+  function getColorForClass(name) {
+    const colors = {
+      'Renda Fixa': '#10B981',
+      'Ações BR': '#3B82F6',
+      'FIIs': '#8B5CF6',
+      'Ações EUA': '#EC4899',
+      'Cripto': '#F97316',
+      'Metais': '#EAB308',
+      'ETFs': '#06B6D4'
+    };
+    return colors[name] || '#64748B';
+  }
+
+  function getProbabilityColor(prob) {
+    switch(prob) {
+      case 'alta': return 'text-emerald-400 bg-emerald-500/20';
+      case 'media': return 'text-amber-400 bg-amber-500/20';
+      case 'baixa': return 'text-red-400 bg-red-500/20';
+      default: return 'text-slate-400 bg-slate-500/20';
+    }
+  }
+
+  function getRiskColor(risk) {
+    switch(risk) {
+      case 'baixo': return 'text-emerald-400';
+      case 'moderado': return 'text-amber-400';
+      case 'alto': return 'text-red-400';
+      default: return 'text-slate-400';
+    }
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -110,7 +177,7 @@ export default function Dashboard() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">
-            Olá, {user?.name?.split(' ')[0]}! 👋
+            Olá, {user?.name?.split(' ')[0] || 'Usuário'}! 👋
           </h1>
           <p className="text-slate-500 text-sm mt-1">
             {summary?.lastUpdate ? (
@@ -140,7 +207,7 @@ export default function Dashboard() {
         <div className="stat-card bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border-emerald-500/20">
           <div className="flex items-center justify-between mb-2">
             <DollarSign className="w-5 h-5 text-emerald-400" />
-            {summary?.totalGain >= 0 ? (
+            {(summary?.totalGain || 0) >= 0 ? (
               <ArrowUpRight className="w-4 h-4 text-emerald-400" />
             ) : (
               <ArrowDownRight className="w-4 h-4 text-red-400" />
@@ -150,20 +217,20 @@ export default function Dashboard() {
           <p className="text-xs text-slate-400 mt-1">Patrimônio Total</p>
         </div>
 
-        <div className={`stat-card ${summary?.totalGain >= 0 
+        <div className={`stat-card ${(summary?.totalGain || 0) >= 0 
           ? 'bg-gradient-to-br from-green-500/20 to-emerald-500/10 border-green-500/20' 
           : 'bg-gradient-to-br from-red-500/20 to-rose-500/10 border-red-500/20'}`}>
           <div className="flex items-center justify-between mb-2">
-            {summary?.totalGain >= 0 ? (
+            {(summary?.totalGain || 0) >= 0 ? (
               <TrendingUp className="w-5 h-5 text-green-400" />
             ) : (
               <TrendingDown className="w-5 h-5 text-red-400" />
             )}
-            <span className={`text-xs font-medium ${summary?.totalGain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            <span className={`text-xs font-medium ${(summary?.totalGain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
               {formatPercent(summary?.gainPercentage)}
             </span>
           </div>
-          <p className={`text-2xl font-bold ${summary?.totalGain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <p className={`text-2xl font-bold ${(summary?.totalGain || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {formatCurrency(summary?.totalGain)}
           </p>
           <p className="text-xs text-slate-400 mt-1">Ganho/Perda Total</p>
@@ -188,17 +255,114 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Macro Analysis Section */}
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-5 h-5 text-purple-400" />
+            <h3 className="font-semibold text-white">Análise de Cenário Macro</h3>
+            {macroAnalysis.isDefault && (
+              <span className="text-xs px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded-full">Padrão</span>
+            )}
+          </div>
+          <button
+            onClick={handleRefreshMacro}
+            disabled={refreshingMacro}
+            className="text-sm text-purple-400 hover:text-purple-300 flex items-center gap-1"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshingMacro ? 'animate-spin' : ''}`} />
+            Atualizar
+          </button>
+        </div>
+
+        {macroAnalysis.summary && (
+          <p className="text-sm text-slate-400 mb-4 p-3 bg-slate-800/50 rounded-lg">
+            {macroAnalysis.summary}
+          </p>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Cenários */}
+          <div>
+            <h4 className="text-sm font-medium text-slate-300 mb-3">Cenários com Potencial</h4>
+            <div className="space-y-3">
+              {(macroAnalysis.scenarios || []).map((scenario, i) => (
+                <div key={i} className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                  <div className="flex items-start justify-between mb-2">
+                    <h5 className="font-medium text-white text-sm">{scenario.title}</h5>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${getProbabilityColor(scenario.probability)}`}>
+                      {scenario.probability}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-2">{scenario.description}</p>
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap gap-1">
+                      {(scenario.benefited_assets || []).slice(0, 3).map((asset, j) => (
+                        <span key={j} className="text-xs px-2 py-0.5 bg-slate-700 text-slate-300 rounded">
+                          {asset}
+                        </span>
+                      ))}
+                    </div>
+                    <span className={`text-xs ${getRiskColor(scenario.risk_level)}`}>
+                      Risco {scenario.risk_level}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Alocação Sugerida */}
+          <div>
+            <h4 className="text-sm font-medium text-slate-300 mb-3">Alocação Sugerida</h4>
+            {suggestedAllocationData.length > 0 ? (
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={suggestedAllocationData} layout="vertical">
+                    <XAxis type="number" domain={[0, 'auto']} tick={{ fill: '#64748B', fontSize: 11 }} tickFormatter={v => `${v}%`} />
+                    <YAxis type="category" dataKey="name" width={80} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                    <Tooltip
+                      content={({ active, payload }) => {
+                        if (active && payload && payload.length) {
+                          return (
+                            <div className="bg-slate-800 border border-slate-600 p-2 rounded-lg text-sm">
+                              <p className="text-white">{payload[0]?.payload?.name}</p>
+                              <p className="text-purple-400">{payload[0]?.value}%</p>
+                            </div>
+                          );
+                        }
+                        return null;
+                      }}
+                    />
+                    <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                      {suggestedAllocationData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.fill} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-slate-500">
+                <Target className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p>Configure a API Grok para análises personalizadas</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Allocation Chart */}
         <div className="card p-5">
           <h3 className="font-semibold text-white mb-4">Alocação Atual</h3>
-          {allocation && allocation.length > 0 ? (
+          {allocationWithValue.length > 0 ? (
             <div className="flex items-center gap-4">
               <div className="w-48 h-48">
                 <ResponsiveContainer width="100%" height="100%">
                   <RechartsPie>
                     <Pie
-                      data={allocation.filter(a => a.currentValue > 0)}
+                      data={allocationWithValue}
                       cx="50%"
                       cy="50%"
                       innerRadius={40}
@@ -206,8 +370,8 @@ export default function Dashboard() {
                       paddingAngle={2}
                       dataKey="currentValue"
                     >
-                      {allocation.filter(a => a.currentValue > 0).map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} stroke="none" />
+                      {allocationWithValue.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color || '#3B82F6'} stroke="none" />
                       ))}
                     </Pie>
                     <Tooltip
@@ -218,7 +382,7 @@ export default function Dashboard() {
                             <div className="bg-slate-800 border border-slate-600 p-2 rounded-lg shadow-xl text-sm">
                               <p className="font-medium text-white">{d.name}</p>
                               <p className="text-emerald-400">{formatCurrency(d.currentValue)}</p>
-                              <p className="text-slate-400">{d.currentPercentage.toFixed(1)}%</p>
+                              <p className="text-slate-400">{(d.currentPercentage || 0).toFixed(1)}%</p>
                             </div>
                           );
                         }
@@ -229,11 +393,11 @@ export default function Dashboard() {
                 </ResponsiveContainer>
               </div>
               <div className="flex-1 space-y-2">
-                {allocation.filter(a => a.currentValue > 0).map((item, i) => (
+                {allocationWithValue.map((item, i) => (
                   <div key={i} className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color || '#3B82F6' }} />
                     <span className="text-sm text-slate-300 flex-1 truncate">{item.name}</span>
-                    <span className="text-sm font-mono text-slate-400">{item.currentPercentage.toFixed(1)}%</span>
+                    <span className="text-sm font-mono text-slate-400">{(item.currentPercentage || 0).toFixed(1)}%</span>
                   </div>
                 ))}
               </div>
@@ -248,8 +412,8 @@ export default function Dashboard() {
 
         {/* Recommendations */}
         <div className="card p-5">
-          <h3 className="font-semibold text-white mb-4">Recomendações</h3>
-          {recommendations && recommendations.length > 0 ? (
+          <h3 className="font-semibold text-white mb-4">Recomendações de Rebalanceamento</h3>
+          {recommendations.length > 0 ? (
             <div className="space-y-3 max-h-64 overflow-y-auto">
               {recommendations.map((rec) => (
                 <div
@@ -290,7 +454,7 @@ export default function Dashboard() {
       </div>
 
       {/* History Chart */}
-      {history && history.length > 0 && (
+      {history.length > 0 && (
         <div className="card p-5">
           <h3 className="font-semibold text-white mb-4">Evolução do Patrimônio</h3>
           <div className="h-64">
@@ -306,7 +470,10 @@ export default function Dashboard() {
                   dataKey="date"
                   stroke="#475569"
                   tick={{ fill: '#64748B', fontSize: 12 }}
-                  tickFormatter={(v) => format(new Date(v), 'dd/MM')}
+                  tickFormatter={(v) => {
+                    try { return format(new Date(v), 'dd/MM'); }
+                    catch { return v; }
+                  }}
                 />
                 <YAxis
                   stroke="#475569"
@@ -316,11 +483,11 @@ export default function Dashboard() {
                 <Tooltip
                   content={({ active, payload, label }) => {
                     if (active && payload && payload.length) {
+                      let formattedDate = label;
+                      try { formattedDate = format(new Date(label), 'dd/MM/yyyy'); } catch {}
                       return (
                         <div className="bg-slate-800 border border-slate-600 p-3 rounded-lg shadow-xl">
-                          <p className="text-slate-400 text-xs mb-1">
-                            {format(new Date(label), 'dd/MM/yyyy')}
-                          </p>
+                          <p className="text-slate-400 text-xs mb-1">{formattedDate}</p>
                           <p className="text-emerald-400 font-mono">
                             {formatCurrency(payload[0].value)}
                           </p>
