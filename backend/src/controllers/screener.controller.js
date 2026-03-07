@@ -1,367 +1,280 @@
 const pool = require('../config/database');
-const screenerService = require('../services/screener.service');
+const axios = require('axios');
+
+// Lista de ações para buscar
+const STOCK_LIST = [
+  'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'ABEV3', 'B3SA3', 'WEGE3', 'RENT3',
+  'EQTL3', 'SUZB3', 'RADL3', 'RAIL3', 'JBSS3', 'GGBR4', 'CSNA3', 'USIM5',
+  'VIVT3', 'CMIG4', 'ELET3', 'SBSP3', 'CPLE6', 'TAEE11', 'CPFE3', 'BBAS3',
+  'SANB11', 'ITSA4', 'BPAC11', 'BBSE3', 'CIEL3', 'PRIO3', 'MGLU3', 'LREN3',
+  'ARZZ3', 'PETZ3', 'LWSA3', 'TOTS3', 'POSI3', 'HAPV3', 'RDOR3', 'FLRY3',
+  'QUAL3', 'HYPE3', 'CMIN3', 'KLBN11', 'CSAN3', 'EMBR3', 'AZUL4', 'GOAU4'
+];
 
 class ScreenerController {
-
   // Buscar ações com filtros
   async search(req, res) {
     try {
-      const { tickers, filters } = req.body;
-
-      // Buscar token da Brapi
-      const settings = await pool.query(
-        'SELECT brapi_token FROM user_settings WHERE user_id = $1',
-        [req.userId]
-      );
-
-      const brapiToken = settings.rows[0]?.brapi_token;
-      if (!brapiToken) {
-        return res.status(400).json({ 
-          error: 'Configure sua API key da Brapi nas configurações' 
-        });
-      }
-
-      // Se não passar tickers, usa lista padrão de ações mais negociadas
-      let tickerList = tickers;
-      if (!tickerList || tickerList.length === 0) {
-        tickerList = [
-          'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'ABEV3', 'B3SA3', 'WEGE3', 'RENT3',
-          'EQTL3', 'SUZB3', 'RADL3', 'RAIL3', 'JBSS3', 'GGBR4', 'CSNA3', 'USIM5',
-          'VIVT3', 'CMIG4', 'ELET3', 'SBSP3', 'CPLE6', 'TAEE11', 'ENBR3', 'CPFE3',
-          'BBAS3', 'SANB11', 'ITSA4', 'BPAC11', 'BBSE3', 'CIEL3', 'PRIO3', 'RRRP3',
-          'MGLU3', 'VIIA3', 'LREN3', 'ARZZ3', 'PETZ3', 'LWSA3', 'TOTS3', 'POSI3',
-          'HAPV3', 'RDOR3', 'FLRY3', 'QUAL3', 'HYPE3', 'CMIN3', 'KLBN11', 'CSAN3'
-        ];
+      const userId = req.userId;
+      const filters = req.body.filters || {};
+      
+      // Buscar token do usuário
+      const settings = await pool.query('SELECT brapi_token FROM user_settings WHERE user_id = $1', [userId]);
+      const token = settings.rows[0]?.brapi_token;
+      
+      if (!token) {
+        return res.status(400).json({ error: 'Configure seu token Brapi nas configurações' });
       }
 
       const results = [];
-      const errors = [];
-
-      // Buscar dados de cada ticker (em paralelo, mas limitado)
       const batchSize = 5;
-      for (let i = 0; i < tickerList.length; i += batchSize) {
-        const batch = tickerList.slice(i, i + batchSize);
-        const promises = batch.map(ticker => 
-          screenerService.getFundamentals(ticker, brapiToken)
-        );
+      
+      // Buscar em batches
+      for (let i = 0; i < STOCK_LIST.length; i += batchSize) {
+        const batch = STOCK_LIST.slice(i, i + batchSize);
+        const tickers = batch.join(',');
         
-        const batchResults = await Promise.all(promises);
-        
-        for (let j = 0; j < batchResults.length; j++) {
-          const stock = batchResults[j];
-          const ticker = batch[j];
+        try {
+          const response = await axios.get(
+            `https://brapi.dev/api/quote/${tickers}?token=${token}&fundamental=true`,
+            { timeout: 15000 }
+          );
           
-          if (!stock) {
-            errors.push(ticker);
-            continue;
+          if (response.data?.results) {
+            for (const stock of response.data.results) {
+              const fundamentals = this.extractFundamentals(stock);
+              const passesFilter = this.applyFilters(fundamentals, filters);
+              const score = this.calculateScore(fundamentals);
+              
+              if (passesFilter) {
+                results.push({
+                  ticker: stock.symbol,
+                  name: stock.longName || stock.shortName,
+                  price: stock.regularMarketPrice,
+                  change: stock.regularMarketChangePercent,
+                  ...fundamentals,
+                  score,
+                  recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
+                });
+              }
+            }
           }
-
-          // Aplicar filtros
-          const filterResult = screenerService.applyFilters(stock, filters || {});
-          const qualityScore = screenerService.calculateQualityScore(stock);
-
-          results.push({
-            ...stock,
-            passFilters: filterResult.pass,
-            failedReason: filterResult.failed,
-            qualityScore
-          });
+        } catch (e) {
+          console.error(`Erro ao buscar batch ${tickers}:`, e.message);
         }
-
-        // Pequeno delay entre batches para não sobrecarregar a API
-        if (i + batchSize < tickerList.length) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Delay entre batches
+        if (i + batchSize < STOCK_LIST.length) {
+          await new Promise(r => setTimeout(r, 500));
         }
       }
 
-      // Ordenar por score de qualidade
-      results.sort((a, b) => b.qualityScore - a.qualityScore);
+      // Ordenar por score
+      results.sort((a, b) => (b.score || 0) - (a.score || 0));
 
       return res.json({
         total: results.length,
-        passed: results.filter(r => r.passFilters).length,
-        results,
-        errors: errors.length > 0 ? errors : undefined
+        stocks: results
       });
-
     } catch (error) {
       console.error('Erro no screener:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      return res.status(500).json({ error: 'Erro ao buscar ações' });
     }
   }
 
   // Analisar posições do usuário
   async analyzePositions(req, res) {
     try {
-      const { filters } = req.body;
-
-      // Buscar token da Brapi
-      const settings = await pool.query(
-        'SELECT brapi_token FROM user_settings WHERE user_id = $1',
-        [req.userId]
-      );
-
-      const brapiToken = settings.rows[0]?.brapi_token;
-      if (!brapiToken) {
-        return res.status(400).json({ 
-          error: 'Configure sua API key da Brapi nas configurações' 
-        });
-      }
-
-      // Buscar ativos do usuário (apenas ações BR)
-      const assets = await pool.query(`
-        SELECT a.*, ac.name as class_name, ac.category
+      const userId = req.userId;
+      const filters = req.body.filters || {};
+      
+      // Buscar ativos BR do usuário
+      const assetsResult = await pool.query(`
+        SELECT a.*, ac.category 
         FROM assets a
         JOIN asset_classes ac ON a.asset_class_id = ac.id
-        WHERE a.user_id = $1 
-          AND a.quantity > 0 
-          AND a.market = 'BR'
-          AND (ac.category = 'stocks_br' OR ac.name ILIKE '%ação%' OR ac.name ILIKE '%ações%')
-      `, [req.userId]);
+        WHERE a.user_id = $1 AND a.market = 'BR' AND a.quantity > 0
+        AND ac.category IN ('stocks_br', 'fiis')
+      `, [userId]);
 
-      if (assets.rows.length === 0) {
-        return res.json({
-          message: 'Nenhuma ação brasileira encontrada na carteira',
-          analysis: [],
-          summary: { manter: 0, avaliarTroca: 0, comprar: 0 }
-        });
+      if (assetsResult.rows.length === 0) {
+        return res.json({ positions: [], summary: { maintain: 0, evaluate: 0, total: 0, avgScore: 0 } });
       }
 
-      const analysis = [];
+      const settings = await pool.query('SELECT brapi_token FROM user_settings WHERE user_id = $1', [userId]);
+      const token = settings.rows[0]?.brapi_token;
+      
+      if (!token) {
+        return res.status(400).json({ error: 'Configure seu token Brapi nas configurações' });
+      }
 
-      for (const asset of assets.rows) {
-        const stock = await screenerService.getFundamentals(asset.ticker, brapiToken);
-        
-        if (!stock) {
-          analysis.push({
+      const positions = [];
+      let maintain = 0, evaluate = 0, totalScore = 0;
+
+      for (const asset of assetsResult.rows) {
+        try {
+          const response = await axios.get(
+            `https://brapi.dev/api/quote/${asset.ticker}?token=${token}&fundamental=true`,
+            { timeout: 10000 }
+          );
+          
+          if (response.data?.results?.[0]) {
+            const stock = response.data.results[0];
+            const fundamentals = this.extractFundamentals(stock);
+            const score = this.calculateScore(fundamentals);
+            const recommendation = score >= 60 ? 'MANTER' : 'AVALIAR TROCA';
+            
+            if (recommendation === 'MANTER') maintain++;
+            else evaluate++;
+            
+            totalScore += score;
+
+            positions.push({
+              ticker: asset.ticker,
+              name: asset.name,
+              quantity: asset.quantity,
+              avgPrice: asset.average_price,
+              currentPrice: stock.regularMarketPrice,
+              ...fundamentals,
+              score,
+              recommendation
+            });
+          }
+        } catch (e) {
+          positions.push({
             ticker: asset.ticker,
             name: asset.name,
             quantity: asset.quantity,
-            averagePrice: asset.average_price,
-            currentPrice: asset.current_price,
-            error: 'Não foi possível obter dados fundamentalistas'
+            score: 0,
+            recommendation: '-',
+            error: true
           });
-          continue;
         }
-
-        const filterResult = screenerService.applyFilters(stock, filters || {});
-        const qualityScore = screenerService.calculateQualityScore(stock);
-        const recommendation = screenerService.generateRecommendation(stock, filterResult, qualityScore, true);
-
-        // Calcular valores da posição
-        const currentValue = asset.quantity * (stock.price || asset.current_price);
-        const investedValue = asset.quantity * asset.average_price;
-        const gain = currentValue - investedValue;
-        const gainPercent = investedValue > 0 ? (gain / investedValue) * 100 : 0;
-
-        analysis.push({
-          ticker: asset.ticker,
-          name: stock.name || asset.name,
-          quantity: parseFloat(asset.quantity),
-          averagePrice: parseFloat(asset.average_price),
-          currentPrice: stock.price,
-          currentValue,
-          investedValue,
-          gain,
-          gainPercent,
-          // Indicadores
-          fundamentals: {
-            pl: stock.pl,
-            pvp: stock.pvp,
-            psr: stock.psr,
-            dividendYield: stock.dividendYield,
-            roe: stock.roe,
-            roic: stock.roic,
-            margemLiquida: stock.margemLiquida,
-            margemEbit: stock.margemEbit,
-            liquidezCorrente: stock.liquidezCorrente,
-            dividaPatrimonio: stock.dividaPatrimonio,
-            evEbitda: stock.evEbitda
-          },
-          // Análise
-          passFilters: filterResult.pass,
-          failedReason: filterResult.failed,
-          qualityScore,
-          recommendation
-        });
-
-        // Delay entre requests
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-
-      // Ordenar por recomendação (AVALIAR_TROCA primeiro)
-      analysis.sort((a, b) => {
-        const priority = { 'AVALIAR_TROCA': 0, 'MANTER': 1, 'COMPRAR': 2 };
-        const pA = priority[a.recommendation?.action] ?? 3;
-        const pB = priority[b.recommendation?.action] ?? 3;
-        return pA - pB;
-      });
-
-      // Resumo
-      const summary = {
-        manter: analysis.filter(a => a.recommendation?.action === 'MANTER').length,
-        avaliarTroca: analysis.filter(a => a.recommendation?.action === 'AVALIAR_TROCA').length,
-        totalPositions: analysis.length,
-        avgQualityScore: Math.round(
-          analysis.reduce((sum, a) => sum + (a.qualityScore || 0), 0) / analysis.length
-        )
-      };
-
-      return res.json({ analysis, summary });
-
-    } catch (error) {
-      console.error('Erro ao analisar posições:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
-    }
-  }
-
-  // Buscar sugestões de troca
-  async getSuggestions(req, res) {
-    try {
-      const { ticker, filters } = req.body;
-
-      // Buscar token da Brapi
-      const settings = await pool.query(
-        'SELECT brapi_token FROM user_settings WHERE user_id = $1',
-        [req.userId]
-      );
-
-      const brapiToken = settings.rows[0]?.brapi_token;
-      if (!brapiToken) {
-        return res.status(400).json({ 
-          error: 'Configure sua API key da Brapi nas configurações' 
-        });
-      }
-
-      // Buscar dados da ação atual
-      const currentStock = await screenerService.getFundamentals(ticker, brapiToken);
-      if (!currentStock) {
-        return res.status(404).json({ error: 'Ação não encontrada' });
-      }
-
-      // Lista de ações do mesmo setor ou similares para comparar
-      const compareList = [
-        // Petróleo
-        'PETR4', 'PRIO3', 'RRRP3', 'RECV3',
-        // Bancos
-        'ITUB4', 'BBDC4', 'BBAS3', 'SANB11', 'BPAC11',
-        // Energia
-        'ELET3', 'EQTL3', 'CPFE3', 'CMIG4', 'TAEE11', 'ENBR3',
-        // Varejo
-        'MGLU3', 'LREN3', 'ARZZ3', 'VIIA3',
-        // Indústria
-        'WEGE3', 'GGBR4', 'CSNA3', 'USIM5',
-        // Alimentos
-        'JBSS3', 'ABEV3', 'MDIA3', 'BRFS3'
-      ].filter(t => t !== ticker);
-
-      const suggestions = [];
-
-      for (const compareTicker of compareList) {
-        const stock = await screenerService.getFundamentals(compareTicker, brapiToken);
-        if (!stock) continue;
-
-        const filterResult = screenerService.applyFilters(stock, filters || {});
-        if (!filterResult.pass) continue;
-
-        const qualityScore = screenerService.calculateQualityScore(stock);
         
-        // Só sugerir se tiver score melhor que a atual
-        const currentScore = screenerService.calculateQualityScore(currentStock);
-        if (qualityScore > currentScore) {
-          suggestions.push({
-            ...stock,
-            qualityScore,
-            scoreDiff: qualityScore - currentScore
-          });
-        }
-
-        // Delay
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(r => setTimeout(r, 300));
       }
-
-      // Ordenar por diferença de score
-      suggestions.sort((a, b) => b.scoreDiff - a.scoreDiff);
 
       return res.json({
-        currentStock: {
-          ...currentStock,
-          qualityScore: screenerService.calculateQualityScore(currentStock)
-        },
-        suggestions: suggestions.slice(0, 5)
+        positions,
+        summary: {
+          maintain,
+          evaluate,
+          total: positions.length,
+          avgScore: positions.length > 0 ? Math.round(totalScore / positions.length) : 0
+        }
       });
-
     } catch (error) {
-      console.error('Erro ao buscar sugestões:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      console.error('Erro ao analisar posições:', error);
+      return res.status(500).json({ error: 'Erro ao analisar posições' });
     }
   }
 
-  // Obter dados fundamentalistas de um ticker específico
+  // Sugestões de troca
+  async getSuggestions(req, res) {
+    try {
+      const { ticker } = req.body;
+      const userId = req.userId;
+      
+      const settings = await pool.query('SELECT brapi_token FROM user_settings WHERE user_id = $1', [userId]);
+      const token = settings.rows[0]?.brapi_token;
+      
+      if (!token) {
+        return res.status(400).json({ error: 'Configure seu token Brapi' });
+      }
+
+      // Buscar ações do mesmo setor com score melhor
+      const suggestions = [];
+      const sampleStocks = ['WEGE3', 'ITSA4', 'TAEE11', 'BBAS3', 'EGIE3'];
+      
+      for (const stock of sampleStocks) {
+        if (stock !== ticker) {
+          try {
+            const response = await axios.get(
+              `https://brapi.dev/api/quote/${stock}?token=${token}&fundamental=true`,
+              { timeout: 10000 }
+            );
+            
+            if (response.data?.results?.[0]) {
+              const data = response.data.results[0];
+              const fundamentals = this.extractFundamentals(data);
+              const score = this.calculateScore(fundamentals);
+              
+              suggestions.push({
+                ticker: stock,
+                name: data.longName,
+                price: data.regularMarketPrice,
+                ...fundamentals,
+                score
+              });
+            }
+          } catch (e) {
+            // Ignorar erros
+          }
+        }
+      }
+
+      suggestions.sort((a, b) => b.score - a.score);
+      return res.json({ suggestions: suggestions.slice(0, 5) });
+    } catch (error) {
+      console.error('Erro ao buscar sugestões:', error);
+      return res.status(500).json({ error: 'Erro ao buscar sugestões' });
+    }
+  }
+
+  // Dados fundamentalistas de um ticker
   async getFundamentals(req, res) {
     try {
       const { ticker } = req.params;
-
-      // Buscar token da Brapi
-      const settings = await pool.query(
-        'SELECT brapi_token FROM user_settings WHERE user_id = $1',
-        [req.userId]
-      );
-
-      const brapiToken = settings.rows[0]?.brapi_token;
-      if (!brapiToken) {
-        return res.status(400).json({ 
-          error: 'Configure sua API key da Brapi nas configurações' 
-        });
+      const userId = req.userId;
+      
+      const settings = await pool.query('SELECT brapi_token FROM user_settings WHERE user_id = $1', [userId]);
+      const token = settings.rows[0]?.brapi_token;
+      
+      if (!token) {
+        return res.status(400).json({ error: 'Configure seu token Brapi' });
       }
 
-      const stock = await screenerService.getFundamentals(ticker, brapiToken);
+      const response = await axios.get(
+        `https://brapi.dev/api/quote/${ticker}?token=${token}&fundamental=true`,
+        { timeout: 10000 }
+      );
       
-      if (!stock) {
+      if (!response.data?.results?.[0]) {
         return res.status(404).json({ error: 'Ação não encontrada' });
       }
 
-      const qualityScore = screenerService.calculateQualityScore(stock);
+      const stock = response.data.results[0];
+      const fundamentals = this.extractFundamentals(stock);
+      const score = this.calculateScore(fundamentals);
 
       return res.json({
-        ...stock,
-        qualityScore
+        ticker: stock.symbol,
+        name: stock.longName,
+        price: stock.regularMarketPrice,
+        ...fundamentals,
+        score
       });
-
     } catch (error) {
-      console.error('Erro ao buscar fundamentals:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      console.error('Erro ao buscar fundamentalistas:', error);
+      return res.status(500).json({ error: 'Erro ao buscar dados' });
     }
   }
 
-  // Salvar filtros do usuário
+  // Salvar filtros
   async saveFilters(req, res) {
     try {
-      const { filters, name } = req.body;
-
-      // Verificar se já existe
-      const existing = await pool.query(
-        'SELECT id FROM screener_filters WHERE user_id = $1 AND name = $2',
-        [req.userId, name]
-      );
-
-      if (existing.rows.length > 0) {
-        await pool.query(
-          'UPDATE screener_filters SET filters = $1, updated_at = NOW() WHERE id = $2',
-          [JSON.stringify(filters), existing.rows[0].id]
-        );
-      } else {
-        await pool.query(
-          'INSERT INTO screener_filters (user_id, name, filters) VALUES ($1, $2, $3)',
-          [req.userId, name, JSON.stringify(filters)]
-        );
-      }
+      const { name, filters } = req.body;
+      
+      await pool.query(`
+        INSERT INTO screener_filters (user_id, name, filters)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, name) DO UPDATE SET filters = $3, updated_at = NOW()
+      `, [req.userId, name, JSON.stringify(filters)]);
 
       return res.json({ message: 'Filtros salvos' });
-
     } catch (error) {
       console.error('Erro ao salvar filtros:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      return res.status(500).json({ error: 'Erro ao salvar' });
     }
   }
 
@@ -369,22 +282,93 @@ class ScreenerController {
   async listFilters(req, res) {
     try {
       const result = await pool.query(
-        'SELECT * FROM screener_filters WHERE user_id = $1 ORDER BY name',
+        'SELECT * FROM screener_filters WHERE user_id = $1',
         [req.userId]
       );
-
-      return res.json({ 
-        filters: result.rows.map(r => ({
-          id: r.id,
-          name: r.name,
-          filters: JSON.parse(r.filters)
-        }))
-      });
-
+      return res.json({ filters: result.rows });
     } catch (error) {
       console.error('Erro ao listar filtros:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      return res.status(500).json({ error: 'Erro ao listar' });
     }
+  }
+
+  // Extrair dados fundamentalistas
+  extractFundamentals(stock) {
+    return {
+      pl: stock.priceEarnings || null,
+      pvp: stock.priceToBook || null,
+      psr: stock.priceToSalesTrailing12Months || null,
+      dy: stock.dividendYield ? stock.dividendYield * 100 : null,
+      evEbitda: stock.enterpriseToEbitda || null,
+      margemEbit: stock.ebitdaMargins ? stock.ebitdaMargins * 100 : null,
+      margemLiquida: stock.profitMargins ? stock.profitMargins * 100 : null,
+      liquidezCorrente: stock.currentRatio || null,
+      roic: stock.returnOnAssets ? stock.returnOnAssets * 100 : null,
+      roe: stock.returnOnEquity ? stock.returnOnEquity * 100 : null,
+      dividaPl: stock.debtToEquity || null,
+      crescReceita: stock.revenueGrowth ? stock.revenueGrowth * 100 : null
+    };
+  }
+
+  // Aplicar filtros (com min e max)
+  applyFilters(data, filters) {
+    for (const [key, range] of Object.entries(filters)) {
+      const value = data[key];
+      if (value === null || value === undefined) continue;
+      
+      const min = range.min !== undefined && range.min !== '' ? parseFloat(range.min) : null;
+      const max = range.max !== undefined && range.max !== '' ? parseFloat(range.max) : null;
+      
+      if (min !== null && value < min) return false;
+      if (max !== null && value > max) return false;
+    }
+    return true;
+  }
+
+  // Calcular score de qualidade (0-100)
+  calculateScore(data) {
+    let score = 50; // Base
+    
+    // P/L entre 5-15 é bom
+    if (data.pl !== null) {
+      if (data.pl >= 5 && data.pl <= 15) score += 10;
+      else if (data.pl > 0 && data.pl < 5) score += 5;
+      else if (data.pl > 25) score -= 10;
+    }
+
+    // P/VP < 1.5 é bom
+    if (data.pvp !== null) {
+      if (data.pvp < 1) score += 10;
+      else if (data.pvp < 1.5) score += 5;
+      else if (data.pvp > 3) score -= 10;
+    }
+
+    // DY > 4% é bom
+    if (data.dy !== null) {
+      if (data.dy > 6) score += 10;
+      else if (data.dy > 4) score += 5;
+    }
+
+    // ROE > 15% é bom
+    if (data.roe !== null) {
+      if (data.roe > 20) score += 10;
+      else if (data.roe > 15) score += 5;
+      else if (data.roe < 5) score -= 5;
+    }
+
+    // Margem líquida > 10% é bom
+    if (data.margemLiquida !== null) {
+      if (data.margemLiquida > 15) score += 5;
+      else if (data.margemLiquida > 10) score += 3;
+    }
+
+    // Dívida/PL < 1 é bom
+    if (data.dividaPl !== null) {
+      if (data.dividaPl < 0.5) score += 5;
+      else if (data.dividaPl > 2) score -= 10;
+    }
+
+    return Math.max(0, Math.min(100, score));
   }
 }
 

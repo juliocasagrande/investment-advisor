@@ -1,56 +1,53 @@
 const pool = require('../config/database');
 
 class GoalsController {
-
-  // Listar metas
   async list(req, res) {
     try {
-      const result = await pool.query(`
-        SELECT * FROM goals 
-        WHERE user_id = $1 
-        ORDER BY is_completed ASC, target_date ASC NULLS LAST
-      `, [req.userId]);
-
-      return res.json({ goals: result.rows });
-
+      const result = await pool.query(
+        'SELECT * FROM goals WHERE user_id = $1 ORDER BY target_date ASC',
+        [req.userId]
+      );
+      
+      // Calcular progresso para cada meta
+      const totalInvested = await pool.query(
+        'SELECT COALESCE(SUM(quantity * current_price), 0) as total FROM assets WHERE user_id = $1',
+        [req.userId]
+      );
+      const currentValue = parseFloat(totalInvested.rows[0]?.total || 0);
+      
+      const goals = result.rows.map(goal => {
+        const progress = goal.target_value > 0 ? (currentValue / goal.target_value) * 100 : 0;
+        return { ...goal, progress: Math.min(progress, 100), currentValue };
+      });
+      
+      return res.json({ goals });
     } catch (error) {
       console.error('Erro ao listar metas:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
 
-  // Criar meta
   async create(req, res) {
     try {
       const { name, targetValue, targetDate, monthlyContribution, expectedYield, color } = req.body;
 
       if (!name || !targetValue) {
-        return res.status(400).json({ error: 'Nome e valor alvo são obrigatórios' });
+        return res.status(400).json({ error: 'Nome e valor são obrigatórios' });
       }
 
       const result = await pool.query(`
         INSERT INTO goals (user_id, name, target_value, target_date, monthly_contribution, expected_yield, color)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
-      `, [
-        req.userId,
-        name,
-        targetValue,
-        targetDate || null,
-        monthlyContribution || 0,
-        expectedYield || 10,
-        color || '#10B981'
-      ]);
+      `, [req.userId, name, targetValue, targetDate || null, monthlyContribution || 0, expectedYield || 10, color || '#10b981']);
 
       return res.status(201).json({ goal: result.rows[0] });
-
     } catch (error) {
       console.error('Erro ao criar meta:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
 
-  // Atualizar meta
   async update(req, res) {
     try {
       const { id } = req.params;
@@ -75,14 +72,12 @@ class GoalsController {
       }
 
       return res.json({ goal: result.rows[0] });
-
     } catch (error) {
       console.error('Erro ao atualizar meta:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
 
-  // Excluir meta
   async delete(req, res) {
     try {
       const { id } = req.params;
@@ -97,7 +92,6 @@ class GoalsController {
       }
 
       return res.json({ message: 'Meta excluída' });
-
     } catch (error) {
       console.error('Erro ao excluir meta:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });

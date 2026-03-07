@@ -25,6 +25,7 @@ class DividendsController {
       }
 
       query += ' ORDER BY d.payment_date DESC';
+      
       const result = await pool.query(query, params);
       return res.json({ dividends: result.rows });
     } catch (error) {
@@ -42,10 +43,12 @@ class DividendsController {
         return res.status(400).json({ error: 'Campos obrigatórios: assetId, amount, paymentDate' });
       }
 
+      // Verificar se o ativo pertence ao usuário
       const assetCheck = await pool.query(
         'SELECT id FROM assets WHERE id = $1 AND user_id = $2',
         [assetId, userId]
       );
+      
       if (assetCheck.rows.length === 0) {
         return res.status(404).json({ error: 'Ativo não encontrado' });
       }
@@ -54,7 +57,7 @@ class DividendsController {
         INSERT INTO dividends (user_id, asset_id, type, amount, payment_date, ex_date, notes)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
-      `, [userId, assetId, type || 'DIVIDEND', amount, paymentDate, exDate, notes]);
+      `, [userId, assetId, type || 'DIVIDEND', amount, paymentDate, exDate || null, notes || null]);
 
       return res.status(201).json({ dividend: result.rows[0] });
     } catch (error) {
@@ -83,6 +86,7 @@ class DividendsController {
       if (result.rows.length === 0) {
         return res.status(404).json({ error: 'Dividendo não encontrado' });
       }
+      
       return res.json({ dividend: result.rows[0] });
     } catch (error) {
       console.error('Erro ao atualizar dividendo:', error);
@@ -103,6 +107,7 @@ class DividendsController {
       if (result.rows.length === 0) {
         return res.status(404).json({ error: 'Dividendo não encontrado' });
       }
+      
       return res.json({ message: 'Dividendo excluído' });
     } catch (error) {
       console.error('Erro ao excluir dividendo:', error);
@@ -114,13 +119,16 @@ class DividendsController {
     try {
       const userId = req.userId;
       const { year } = req.query;
-      const targetYear = year || new Date().getFullYear();
+      const targetYear = parseInt(year) || new Date().getFullYear();
 
+      // Total do ano
       const totalYear = await pool.query(`
         SELECT COALESCE(SUM(amount), 0) as total
-        FROM dividends WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
+        FROM dividends 
+        WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
       `, [userId, targetYear]);
 
+      // Este mês
       const thisMonth = await pool.query(`
         SELECT COALESCE(SUM(amount), 0) as total
         FROM dividends 
@@ -129,21 +137,30 @@ class DividendsController {
         AND EXTRACT(MONTH FROM payment_date) = EXTRACT(MONTH FROM CURRENT_DATE)
       `, [userId]);
 
+      // Por mês
       const byMonth = await pool.query(`
         SELECT TO_CHAR(payment_date, 'YYYY-MM') as month, SUM(amount) as total
-        FROM dividends WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
-        GROUP BY TO_CHAR(payment_date, 'YYYY-MM') ORDER BY month
+        FROM dividends 
+        WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
+        GROUP BY TO_CHAR(payment_date, 'YYYY-MM') 
+        ORDER BY month
       `, [userId, targetYear]);
 
+      // Por ativo
       const byAsset = await pool.query(`
         SELECT a.ticker, a.name, SUM(d.amount) as total
-        FROM dividends d JOIN assets a ON d.asset_id = a.id
+        FROM dividends d 
+        JOIN assets a ON d.asset_id = a.id
         WHERE d.user_id = $1 AND EXTRACT(YEAR FROM d.payment_date) = $2
-        GROUP BY a.id, a.ticker, a.name ORDER BY total DESC
+        GROUP BY a.id, a.ticker, a.name 
+        ORDER BY total DESC
       `, [userId, targetYear]);
 
+      // Total investido (para yield on cost)
       const totalInvested = await pool.query(`
-        SELECT COALESCE(SUM(quantity * average_price), 0) as total FROM assets WHERE user_id = $1
+        SELECT COALESCE(SUM(quantity * average_price), 0) as total 
+        FROM assets 
+        WHERE user_id = $1
       `, [userId]);
 
       const totalReceived = parseFloat(totalYear.rows[0].total);

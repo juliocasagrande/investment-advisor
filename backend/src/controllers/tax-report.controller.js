@@ -1,102 +1,113 @@
 const pool = require('../config/database');
 
 class TaxReportController {
-
-  // Obter relatório de IR
   async getReport(req, res) {
     try {
-      const { year } = req.query;
-      const targetYear = parseInt(year) || new Date().getFullYear() - 1;
+      const userId = req.userId;
+      const year = parseInt(req.query.year) || new Date().getFullYear();
 
-      // Posição em 31/12
-      const position = await pool.query(`
-        SELECT 
-          a.ticker,
-          a.name,
-          a.quantity,
-          a.average_price,
-          (a.quantity * a.average_price) as cost_basis,
-          ac.name as class_name
-        FROM assets a
-        JOIN asset_classes ac ON a.asset_class_id = ac.id
-        WHERE a.user_id = $1 AND a.quantity > 0
-        ORDER BY cost_basis DESC
-      `, [req.userId]);
+      // Buscar transações de venda no ano
+      const salesResult = await pool.query(`
+        SELECT t.*, a.ticker, a.name as asset_name, a.market
+        FROM transactions t
+        JOIN assets a ON t.asset_id = a.id
+        WHERE t.user_id = $1 
+        AND t.type = 'SELL' 
+        AND EXTRACT(YEAR FROM t.date) = $2
+        ORDER BY t.date
+      `, [userId, year]);
 
-      // Lucros/Prejuízos por mês
-      const gains = await pool.query(`
-        SELECT 
-          TO_CHAR(date, 'YYYY-MM') as month,
-          SUM(CASE WHEN type = 'SELL' THEN total ELSE 0 END) as total_sales,
-          SUM(CASE WHEN realized_gain > 0 THEN realized_gain ELSE 0 END) as total_gains,
-          SUM(CASE WHEN realized_gain < 0 THEN realized_gain ELSE 0 END) as total_losses,
-          SUM(COALESCE(realized_gain, 0)) as net_result
-        FROM transactions
-        WHERE user_id = $1 AND EXTRACT(YEAR FROM date) = $2 AND type = 'SELL'
-        GROUP BY TO_CHAR(date, 'YYYY-MM')
-        ORDER BY month
-      `, [req.userId, targetYear]);
+      // Calcular ganhos por mês
+      const monthlyGains = {};
+      let totalGains = 0;
+      let totalLosses = 0;
 
-      // Dividendos por ativo
-      const dividends = await pool.query(`
-        SELECT 
-          a.ticker,
-          d.type,
-          SUM(d.amount) as total
+      for (const sale of salesResult.rows) {
+        const month = new Date(sale.date).toISOString().slice(0, 7);
+        const gain = parseFloat(sale.realized_gain) || 0;
+        
+        if (!monthlyGains[month]) {
+          monthlyGains[month] = { gains: 0, losses: 0, total: 0, sales: [] };
+        }
+
+        if (gain >= 0) {
+          monthlyGains[month].gains += gain;
+          totalGains += gain;
+        } else {
+          monthlyGains[month].losses += Math.abs(gain);
+          totalLosses += Math.abs(gain);
+        }
+        monthlyGains[month].total += gain;
+        monthlyGains[month].sales.push({
+          ticker: sale.ticker,
+          date: sale.date,
+          quantity: sale.quantity,
+          price: sale.price,
+          total: sale.total,
+          gain: gain
+        });
+      }
+
+      // Buscar dividendos
+      const dividendsResult = await pool.query(`
+        SELECT d.*, a.ticker
         FROM dividends d
         JOIN assets a ON d.asset_id = a.id
         WHERE d.user_id = $1 AND EXTRACT(YEAR FROM d.payment_date) = $2
-        GROUP BY a.ticker, d.type
-        ORDER BY total DESC
-      `, [req.userId, targetYear]);
+      `, [userId, year]);
 
-      // Calcular totais
-      const positionDec31 = position.rows.reduce((sum, p) => sum + parseFloat(p.cost_basis || 0), 0);
-      
-      const totalGains = gains.rows.reduce((sum, g) => sum + parseFloat(g.total_gains || 0), 0);
-      const totalLosses = gains.rows.reduce((sum, g) => sum + parseFloat(g.total_losses || 0), 0);
-      const netGains = totalGains + totalLosses;
+      const totalDividends = dividendsResult.rows.reduce((sum, d) => sum + parseFloat(d.amount), 0);
 
-      const totalDividends = dividends.rows.reduce((sum, d) => sum + parseFloat(d.total || 0), 0);
+      // Calcular DARF estimado (15% sobre lucros líquidos acima de R$ 20.000/mês para ações)
+      let estimatedDarf = 0;
+      for (const [month, data] of Object.entries(monthlyGains)) {
+        // Simplificação: 15% sobre lucro líquido positivo
+        if (data.total > 0) {
+          estimatedDarf += data.total * 0.15;
+        }
+      }
 
-      // DARF estimado (15% sobre lucro líquido em swing trade, 20% day trade)
-      // Simplificado: considera apenas swing trade
-      const darfDue = netGains > 0 ? netGains * 0.15 : 0;
+      // Posição em 31/12
+      const positionResult = await pool.query(`
+        SELECT a.ticker, a.name, a.quantity, a.average_price, a.market,
+               ac.name as class_name
+        FROM assets a
+        JOIN asset_classes ac ON a.asset_class_id = ac.id
+        WHERE a.user_id = $1 AND a.quantity > 0
+        ORDER BY (a.quantity * a.average_price) DESC
+      `, [userId]);
+
+      const position = positionResult.rows.map(a => ({
+        ...a,
+        totalCost: a.quantity * a.average_price
+      }));
 
       return res.json({
-        year: targetYear,
-        position: position.rows,
-        gains: gains.rows,
-        dividends: dividends.rows,
+        year,
         summary: {
-          positionDec31,
           totalGains,
           totalLosses,
-          netGains,
-          totalDividends,
-          darfDue
-        }
+          netResult: totalGains - totalLosses,
+          estimatedDarf,
+          totalDividends
+        },
+        monthlyGains: Object.entries(monthlyGains).map(([month, data]) => ({
+          month,
+          ...data
+        })).sort((a, b) => a.month.localeCompare(b.month)),
+        dividends: dividendsResult.rows,
+        position
       });
-
     } catch (error) {
       console.error('Erro ao gerar relatório IR:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
 
-  // Exportar relatório
   async exportReport(req, res) {
     try {
-      const { year } = req.query;
-      
-      // Usa o mesmo método do getReport
-      req.query.year = year;
       const report = await this.getReport(req, { json: (data) => data });
-
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', `attachment; filename=relatorio-ir-${year}.json`);
       return res.json(report);
-
     } catch (error) {
       console.error('Erro ao exportar relatório:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
