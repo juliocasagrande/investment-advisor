@@ -8,21 +8,41 @@ class GoalsController {
         [req.userId]
       );
       
-      // Calcular progresso para cada meta
-      const totalInvested = await pool.query(
-        'SELECT COALESCE(SUM(quantity * current_price), 0) as total FROM assets WHERE user_id = $1',
+      // Calcular patrimônio atual
+      const totalResult = await pool.query(
+        'SELECT COALESCE(SUM(quantity * COALESCE(current_price, average_price)), 0) as total FROM assets WHERE user_id = $1',
         [req.userId]
       );
-      const currentValue = parseFloat(totalInvested.rows[0]?.total || 0);
+      const currentValue = parseFloat(totalResult.rows[0]?.total || 0);
       
       const goals = result.rows.map(goal => {
-        const progress = goal.target_value > 0 ? (currentValue / goal.target_value) * 100 : 0;
-        return { ...goal, progress: Math.min(progress, 100), currentValue };
+        const targetValue = parseFloat(goal.target_value) || 0;
+        const progress = targetValue > 0 ? Math.min((currentValue / targetValue) * 100, 100) : 0;
+        return { ...goal, progress: Math.round(progress * 10) / 10, currentValue };
       });
       
       return res.json({ goals });
     } catch (error) {
       console.error('Erro ao listar metas:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+
+  async get(req, res) {
+    try {
+      const { id } = req.params;
+      const result = await pool.query(
+        'SELECT * FROM goals WHERE id = $1 AND user_id = $2',
+        [id, req.userId]
+      );
+      
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Meta não encontrada' });
+      }
+      
+      return res.json({ goal: result.rows[0] });
+    } catch (error) {
+      console.error('Erro ao buscar meta:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }

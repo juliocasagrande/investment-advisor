@@ -81,14 +81,15 @@ Retorne APENAS um JSON válido (sem markdown, sem \`\`\`) com esta estrutura exa
 Inclua 3-5 cenários cobrindo: taxa de juros, inflação, câmbio, commodities.
 A soma da alocação sugerida deve ser exatamente 100%.`;
 
+      // Usar modelo atualizado - llama-3.3-70b-versatile
       const response = await axios.post(
         'https://api.groq.com/openai/v1/chat/completions',
         {
-          model: 'llama3-70b-8192',
+          model: 'llama-3.3-70b-versatile',
           messages: [
             { 
               role: 'system', 
-              content: 'Você é um analista financeiro. Responda APENAS com JSON válido, sem markdown ou explicações adicionais.' 
+              content: 'Você é um analista financeiro. Responda APENAS com JSON válido, sem markdown ou explicações.' 
             },
             { role: 'user', content: prompt }
           ],

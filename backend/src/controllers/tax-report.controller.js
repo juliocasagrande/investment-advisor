@@ -4,13 +4,14 @@ class TaxReportController {
   async getReport(req, res) {
     try {
       const userId = req.userId;
-      const year = parseInt(req.query.year) || new Date().getFullYear();
+      const year = parseInt(req.params.year) || new Date().getFullYear();
 
       // Buscar transações de venda no ano
       const salesResult = await pool.query(`
-        SELECT t.*, a.ticker, a.name as asset_name, a.market
+        SELECT t.*, a.ticker, a.name as asset_name, a.market, ac.name as class_name
         FROM transactions t
         JOIN assets a ON t.asset_id = a.id
+        LEFT JOIN asset_classes ac ON a.asset_class_id = ac.id
         WHERE t.user_id = $1 
         AND t.type = 'SELL' 
         AND EXTRACT(YEAR FROM t.date) = $2
@@ -41,9 +42,9 @@ class TaxReportController {
         monthlyGains[month].sales.push({
           ticker: sale.ticker,
           date: sale.date,
-          quantity: sale.quantity,
-          price: sale.price,
-          total: sale.total,
+          quantity: parseFloat(sale.quantity),
+          price: parseFloat(sale.price),
+          total: parseFloat(sale.total),
           gain: gain
         });
       }
@@ -58,10 +59,9 @@ class TaxReportController {
 
       const totalDividends = dividendsResult.rows.reduce((sum, d) => sum + parseFloat(d.amount), 0);
 
-      // Calcular DARF estimado (15% sobre lucros líquidos acima de R$ 20.000/mês para ações)
+      // Calcular DARF estimado (15% sobre lucros líquidos)
       let estimatedDarf = 0;
       for (const [month, data] of Object.entries(monthlyGains)) {
-        // Simplificação: 15% sobre lucro líquido positivo
         if (data.total > 0) {
           estimatedDarf += data.total * 0.15;
         }
@@ -72,24 +72,24 @@ class TaxReportController {
         SELECT a.ticker, a.name, a.quantity, a.average_price, a.market,
                ac.name as class_name
         FROM assets a
-        JOIN asset_classes ac ON a.asset_class_id = ac.id
+        LEFT JOIN asset_classes ac ON a.asset_class_id = ac.id
         WHERE a.user_id = $1 AND a.quantity > 0
         ORDER BY (a.quantity * a.average_price) DESC
       `, [userId]);
 
       const position = positionResult.rows.map(a => ({
         ...a,
-        totalCost: a.quantity * a.average_price
+        totalCost: parseFloat(a.quantity) * parseFloat(a.average_price)
       }));
 
       return res.json({
         year,
         summary: {
-          totalGains,
-          totalLosses,
-          netResult: totalGains - totalLosses,
-          estimatedDarf,
-          totalDividends
+          totalGains: Math.round(totalGains * 100) / 100,
+          totalLosses: Math.round(totalLosses * 100) / 100,
+          netResult: Math.round((totalGains - totalLosses) * 100) / 100,
+          estimatedDarf: Math.round(estimatedDarf * 100) / 100,
+          totalDividends: Math.round(totalDividends * 100) / 100
         },
         monthlyGains: Object.entries(monthlyGains).map(([month, data]) => ({
           month,
@@ -106,8 +106,26 @@ class TaxReportController {
 
   async exportReport(req, res) {
     try {
-      const report = await this.getReport(req, { json: (data) => data });
-      return res.json(report);
+      const userId = req.userId;
+      const year = parseInt(req.params.year) || new Date().getFullYear();
+      
+      // Gerar CSV
+      const salesResult = await pool.query(`
+        SELECT t.date, a.ticker, a.name, t.type, t.quantity, t.price, t.total, t.realized_gain
+        FROM transactions t
+        JOIN assets a ON t.asset_id = a.id
+        WHERE t.user_id = $1 AND EXTRACT(YEAR FROM t.date) = $2
+        ORDER BY t.date
+      `, [userId, year]);
+
+      let csv = 'Data,Ticker,Nome,Tipo,Quantidade,Preço,Total,Ganho/Perda\n';
+      for (const row of salesResult.rows) {
+        csv += `${row.date},${row.ticker},${row.name || ''},${row.type},${row.quantity},${row.price},${row.total},${row.realized_gain || 0}\n`;
+      }
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=transacoes-${year}.csv`);
+      return res.send(csv);
     } catch (error) {
       console.error('Erro ao exportar relatório:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });

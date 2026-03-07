@@ -1,7 +1,7 @@
 const pool = require('../config/database');
-const quotesService = require('../services/quotes.service');
 const rebalanceService = require('../services/rebalance.service');
 const macroService = require('../services/macro.service');
+const quotesService = require('../services/quotes.service');
 
 class PortfolioController {
   async getDashboard(req, res) {
@@ -50,6 +50,16 @@ class PortfolioController {
     }
   }
 
+  async getAllocation(req, res) {
+    try {
+      const allocation = await rebalanceService.calculateAllocation(req.userId);
+      return res.json(allocation);
+    } catch (error) {
+      console.error('Erro ao buscar alocação:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+
   async syncQuotes(req, res) {
     const startTime = Date.now();
     try {
@@ -73,19 +83,19 @@ class PortfolioController {
       const results = { success: 0, failed: 0, details: [] };
       
       // Buscar todos os ativos
-      const assets = await pool.query('SELECT * FROM assets WHERE user_id = $1', [userId]);
+      const assets = await pool.query('SELECT * FROM assets WHERE user_id = $1 AND quantity > 0', [userId]);
       
       for (const asset of assets.rows) {
         try {
           let newPrice = null;
           
           // Ativos BR
-          if (asset.market === 'BR' && brapiToken) {
+          if (asset.market === 'BR' && brapiToken && asset.ticker) {
             const quote = await quotesService.getBRQuote(asset.ticker, brapiToken);
             newPrice = quote?.price;
           }
           // Ativos US
-          else if (asset.market === 'US' && alphaKey) {
+          else if (asset.market === 'US' && alphaKey && asset.ticker) {
             const quote = await quotesService.getGlobalQuote(asset.ticker, alphaKey);
             newPrice = quote?.price;
           }
@@ -98,12 +108,19 @@ class PortfolioController {
             results.success++;
             results.details.push({ ticker: asset.ticker, price: newPrice, status: 'ok' });
           } else {
+            // Se não conseguiu atualizar, manter o preço médio como atual
+            if (!asset.current_price) {
+              await pool.query(
+                'UPDATE assets SET current_price = average_price, updated_at = NOW() WHERE id = $1',
+                [asset.id]
+              );
+            }
             results.failed++;
-            results.details.push({ ticker: asset.ticker, status: 'no_price' });
+            results.details.push({ ticker: asset.ticker || asset.name, status: 'no_price' });
           }
         } catch (e) {
           results.failed++;
-          results.details.push({ ticker: asset.ticker, status: 'error', message: e.message });
+          results.details.push({ ticker: asset.ticker || asset.name, status: 'error', message: e.message });
         }
         
         // Delay entre requisições
@@ -139,7 +156,7 @@ class PortfolioController {
       });
     } catch (error) {
       console.error('Erro na sincronização:', error);
-      return res.status(500).json({ error: 'Erro na sincronização' });
+      return res.status(500).json({ error: 'Erro na sincronização: ' + error.message });
     }
   }
 
@@ -162,8 +179,8 @@ class PortfolioController {
         return res.status(400).json({ error: 'Informe um valor válido' });
       }
       
-      const targets = await rebalanceService.calculateContributionTarget(req.userId, amount);
-      return res.json({ amount, targets });
+      const targets = await rebalanceService.calculateContributionTarget(req.userId, parseFloat(amount));
+      return res.json({ amount: parseFloat(amount), targets });
     } catch (error) {
       console.error('Erro ao calcular aporte:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
@@ -189,7 +206,7 @@ class PortfolioController {
       const projection = [];
       let currentValue = allocation.totalValue || 0;
       const monthlyReturn = Math.pow(1 + weightedYield / 100, 1/12) - 1;
-      const incomeYield = passiveIncome.totalMonthly / (allocation.totalValue || 1);
+      const incomeYield = passiveIncome.totalAnnual / (allocation.totalValue || 1) / 12;
 
       for (let i = 0; i <= parseInt(months); i++) {
         projection.push({
@@ -228,7 +245,6 @@ class PortfolioController {
 
   async dismissRecommendation(req, res) {
     try {
-      // Não temos tabela de recomendações, apenas retornar sucesso
       return res.json({ success: true });
     } catch (error) {
       console.error('Erro ao dispensar recomendação:', error);

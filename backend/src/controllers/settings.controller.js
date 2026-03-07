@@ -15,13 +15,13 @@ class SettingsController {
       
       // Mascarar tokens
       if (data.brapi_token) {
-        data.brapi_token_masked = '****' + data.brapi_token.slice(-4);
+        data.brapi_token_masked = '••••' + data.brapi_token.slice(-4);
       }
       if (data.alphavantage_key) {
-        data.alphavantage_key_masked = '****' + data.alphavantage_key.slice(-4);
+        data.alphavantage_key_masked = '••••' + data.alphavantage_key.slice(-4);
       }
       if (data.groq_api_key) {
-        data.groq_api_key_masked = '****' + data.groq_api_key.slice(-4);
+        data.groq_api_key_masked = '••••' + data.groq_api_key.slice(-4);
       }
 
       return res.json({ settings: data });
@@ -146,10 +146,11 @@ class SettingsController {
       } 
       else if (api === 'groq') {
         try {
+          // Usar modelo atualizado
           const response = await axios.post(
             'https://api.groq.com/openai/v1/chat/completions',
             {
-              model: 'llama3-8b-8192',
+              model: 'llama-3.3-70b-versatile',
               messages: [{ role: 'user', content: 'Diga apenas: OK' }],
               max_tokens: 10,
               temperature: 0
@@ -209,34 +210,11 @@ class SettingsController {
   }
 
   async importData(req, res) {
-    const client = await pool.connect();
     try {
-      const { data, overwrite } = req.body;
-      
-      if (!data) {
-        return res.status(400).json({ error: 'Dados não fornecidos' });
-      }
-
-      await client.query('BEGIN');
-
-      if (overwrite) {
-        await client.query('DELETE FROM transactions WHERE user_id = $1', [req.userId]);
-        await client.query('DELETE FROM dividends WHERE user_id = $1', [req.userId]);
-        await client.query('DELETE FROM goals WHERE user_id = $1', [req.userId]);
-        await client.query('DELETE FROM assets WHERE user_id = $1', [req.userId]);
-        await client.query('DELETE FROM asset_classes WHERE user_id = $1', [req.userId]);
-      }
-
-      // Importar dados aqui se necessário...
-
-      await client.query('COMMIT');
-      return res.json({ message: 'Dados importados com sucesso' });
+      return res.json({ message: 'Importação não implementada' });
     } catch (error) {
-      await client.query('ROLLBACK');
       console.error('Erro ao importar dados:', error);
       return res.status(500).json({ error: 'Erro ao importar dados' });
-    } finally {
-      client.release();
     }
   }
 }

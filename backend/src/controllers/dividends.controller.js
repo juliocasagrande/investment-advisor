@@ -4,10 +4,10 @@ class DividendsController {
   async list(req, res) {
     try {
       const userId = req.userId;
-      const { year, assetId } = req.query;
+      const { startDate, endDate, assetId } = req.query;
       
       let query = `
-        SELECT d.*, a.ticker, a.name as asset_name, ac.name as class_name
+        SELECT d.*, a.ticker, a.name as asset_name, ac.name as class_name, ac.color
         FROM dividends d
         JOIN assets a ON d.asset_id = a.id
         JOIN asset_classes ac ON a.asset_class_id = ac.id
@@ -15,9 +15,13 @@ class DividendsController {
       `;
       const params = [userId];
 
-      if (year) {
-        params.push(year);
-        query += ` AND EXTRACT(YEAR FROM d.payment_date) = $${params.length}`;
+      if (startDate) {
+        params.push(startDate);
+        query += ` AND d.payment_date >= $${params.length}`;
+      }
+      if (endDate) {
+        params.push(endDate);
+        query += ` AND d.payment_date <= $${params.length}`;
       }
       if (assetId) {
         params.push(assetId);
@@ -30,6 +34,76 @@ class DividendsController {
       return res.json({ dividends: result.rows });
     } catch (error) {
       console.error('Erro ao listar dividendos:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+
+  async getSummary(req, res) {
+    try {
+      const userId = req.userId;
+      const { year } = req.query;
+      const targetYear = parseInt(year) || new Date().getFullYear();
+
+      // Total do ano
+      const totalYearResult = await pool.query(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM dividends 
+        WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
+      `, [userId, targetYear]);
+
+      // Este mês
+      const thisMonthResult = await pool.query(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM dividends 
+        WHERE user_id = $1 
+        AND EXTRACT(YEAR FROM payment_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+        AND EXTRACT(MONTH FROM payment_date) = EXTRACT(MONTH FROM CURRENT_DATE)
+      `, [userId]);
+
+      // Por mês
+      const byMonthResult = await pool.query(`
+        SELECT TO_CHAR(payment_date, 'YYYY-MM') as month, 
+               TO_CHAR(payment_date, 'Mon') as month_name,
+               SUM(amount) as total
+        FROM dividends 
+        WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
+        GROUP BY TO_CHAR(payment_date, 'YYYY-MM'), TO_CHAR(payment_date, 'Mon')
+        ORDER BY month
+      `, [userId, targetYear]);
+
+      // Por ativo
+      const byAssetResult = await pool.query(`
+        SELECT a.ticker, a.name, ac.color, SUM(d.amount) as total
+        FROM dividends d 
+        JOIN assets a ON d.asset_id = a.id
+        JOIN asset_classes ac ON a.asset_class_id = ac.id
+        WHERE d.user_id = $1 AND EXTRACT(YEAR FROM d.payment_date) = $2
+        GROUP BY a.id, a.ticker, a.name, ac.color
+        ORDER BY total DESC
+      `, [userId, targetYear]);
+
+      // Total investido (para yield on cost)
+      const totalInvestedResult = await pool.query(`
+        SELECT COALESCE(SUM(quantity * average_price), 0) as total 
+        FROM assets 
+        WHERE user_id = $1
+      `, [userId]);
+
+      const totalYear = parseFloat(totalYearResult.rows[0].total);
+      const thisMonth = parseFloat(thisMonthResult.rows[0].total);
+      const invested = parseFloat(totalInvestedResult.rows[0].total);
+      const yieldOnCost = invested > 0 ? (totalYear / invested) * 100 : 0;
+
+      return res.json({
+        totalYear,
+        thisMonth,
+        avgMonthly: totalYear / 12,
+        byMonth: byMonthResult.rows,
+        byAsset: byAssetResult.rows,
+        yieldOnCost: Math.round(yieldOnCost * 100) / 100
+      });
+    } catch (error) {
+      console.error('Erro ao obter resumo:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
@@ -111,72 +185,6 @@ class DividendsController {
       return res.json({ message: 'Dividendo excluído' });
     } catch (error) {
       console.error('Erro ao excluir dividendo:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
-    }
-  }
-
-  async getSummary(req, res) {
-    try {
-      const userId = req.userId;
-      const { year } = req.query;
-      const targetYear = parseInt(year) || new Date().getFullYear();
-
-      // Total do ano
-      const totalYear = await pool.query(`
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM dividends 
-        WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
-      `, [userId, targetYear]);
-
-      // Este mês
-      const thisMonth = await pool.query(`
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM dividends 
-        WHERE user_id = $1 
-        AND EXTRACT(YEAR FROM payment_date) = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND EXTRACT(MONTH FROM payment_date) = EXTRACT(MONTH FROM CURRENT_DATE)
-      `, [userId]);
-
-      // Por mês
-      const byMonth = await pool.query(`
-        SELECT TO_CHAR(payment_date, 'YYYY-MM') as month, SUM(amount) as total
-        FROM dividends 
-        WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
-        GROUP BY TO_CHAR(payment_date, 'YYYY-MM') 
-        ORDER BY month
-      `, [userId, targetYear]);
-
-      // Por ativo
-      const byAsset = await pool.query(`
-        SELECT a.ticker, a.name, SUM(d.amount) as total
-        FROM dividends d 
-        JOIN assets a ON d.asset_id = a.id
-        WHERE d.user_id = $1 AND EXTRACT(YEAR FROM d.payment_date) = $2
-        GROUP BY a.id, a.ticker, a.name 
-        ORDER BY total DESC
-      `, [userId, targetYear]);
-
-      // Total investido (para yield on cost)
-      const totalInvested = await pool.query(`
-        SELECT COALESCE(SUM(quantity * average_price), 0) as total 
-        FROM assets 
-        WHERE user_id = $1
-      `, [userId]);
-
-      const totalReceived = parseFloat(totalYear.rows[0].total);
-      const invested = parseFloat(totalInvested.rows[0].total);
-      const yieldOnCost = invested > 0 ? (totalReceived / invested) * 100 : 0;
-
-      return res.json({
-        totalYear: totalReceived,
-        thisMonth: parseFloat(thisMonth.rows[0].total),
-        avgMonthly: totalReceived / 12,
-        byMonth: byMonth.rows,
-        byAsset: byAsset.rows,
-        yieldOnCost
-      });
-    } catch (error) {
-      console.error('Erro ao obter resumo:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }

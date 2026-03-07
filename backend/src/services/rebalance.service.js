@@ -3,13 +3,13 @@ const pool = require('../config/database');
 class RebalanceService {
   async calculateAllocation(userId) {
     try {
-      // Buscar classes com targets
+      // Buscar classes com targets e valores dos ativos
       const classesResult = await pool.query(`
         SELECT ac.*, 
           COALESCE(SUM(a.quantity * COALESCE(a.current_price, a.average_price)), 0) as current_value,
           COALESCE(SUM(a.quantity * a.average_price), 0) as invested_value
         FROM asset_classes ac
-        LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = ac.user_id
+        LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = ac.user_id AND a.quantity > 0
         WHERE ac.user_id = $1
         GROUP BY ac.id
         ORDER BY ac.target_percentage DESC
@@ -19,23 +19,27 @@ class RebalanceService {
       const totalValue = classes.reduce((sum, c) => sum + parseFloat(c.current_value || 0), 0);
       const totalInvested = classes.reduce((sum, c) => sum + parseFloat(c.invested_value || 0), 0);
 
-      const allocation = classes.map(c => ({
-        id: c.id,
-        name: c.name,
-        color: c.color,
-        category: c.category,
-        targetPercentage: parseFloat(c.target_percentage) || 0,
-        currentValue: parseFloat(c.current_value) || 0,
-        investedValue: parseFloat(c.invested_value) || 0,
-        currentPercentage: totalValue > 0 ? (parseFloat(c.current_value) / totalValue) * 100 : 0,
-        expectedYield: parseFloat(c.expected_yield) || 10,
-        difference: 0
-      }));
-
-      // Calcular diferença
-      for (const a of allocation) {
-        a.difference = a.currentPercentage - a.targetPercentage;
-      }
+      const allocation = classes.map(c => {
+        const currentValue = parseFloat(c.current_value) || 0;
+        const investedValue = parseFloat(c.invested_value) || 0;
+        const targetPercentage = parseFloat(c.target_percentage) || 0;
+        const currentPercentage = totalValue > 0 ? (currentValue / totalValue) * 100 : 0;
+        const difference = currentPercentage - targetPercentage;
+        
+        return {
+          id: c.id,
+          name: c.name,
+          color: c.color,
+          category: c.category,
+          icon: c.icon,
+          targetPercentage,
+          currentValue,
+          investedValue,
+          currentPercentage,
+          expectedYield: parseFloat(c.expected_yield) || 10,
+          difference: Math.round(difference * 10) / 10
+        };
+      });
 
       return {
         totalValue,
@@ -72,7 +76,7 @@ class RebalanceService {
         SELECT ac.name, ac.expected_yield, ac.color,
           COALESCE(SUM(a.quantity * COALESCE(a.current_price, a.average_price)), 0) as value
         FROM asset_classes ac
-        LEFT JOIN assets a ON a.asset_class_id = ac.id
+        LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = ac.user_id AND a.quantity > 0
         WHERE ac.user_id = $1
         GROUP BY ac.id
       `, [userId]);
@@ -98,10 +102,14 @@ class RebalanceService {
         }
       }
 
+      // Usar o maior valor entre realizado e estimado
+      const finalAnnual = Math.max(annualDividends, estimatedAnnual);
+
       return {
-        totalMonthly: estimatedAnnual / 12,
-        totalAnnual: estimatedAnnual,
+        totalMonthly: finalAnnual / 12,
+        totalAnnual: finalAnnual,
         realizedLast12Months: annualDividends,
+        estimatedAnnual,
         breakdown
       };
     } catch (error) {
@@ -114,35 +122,39 @@ class RebalanceService {
     try {
       const allocation = await this.calculateAllocation(userId);
       const suggestions = [];
-      const threshold = 5; // Limiar de 5%
+      const threshold = 3; // Limiar de 3% para sugestões
 
       // Verificar cada classe
       for (const cls of allocation.allocation) {
+        if (cls.targetPercentage <= 0) continue;
+        
         const diff = cls.currentPercentage - cls.targetPercentage;
         
-        // Se a classe está acima do target (vender/não comprar)
+        // Se a classe está acima do target
         if (diff > threshold) {
           suggestions.push({
             type: 'REDUCE',
+            classId: cls.id,
             className: cls.name,
             color: cls.color,
-            currentPercentage: cls.currentPercentage,
+            currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
             targetPercentage: cls.targetPercentage,
-            difference: diff,
-            message: `${cls.name} está ${diff.toFixed(1)}% acima do target. Considere não aportar ou reduzir.`,
+            difference: Math.round(diff * 10) / 10,
+            message: `${cls.name} está ${Math.abs(diff).toFixed(1)}% acima do target. Considere não aportar nesta classe.`,
             priority: diff > 10 ? 'high' : 'medium'
           });
         }
         
-        // Se a classe está abaixo do target (comprar mais)
+        // Se a classe está abaixo do target
         if (diff < -threshold) {
           suggestions.push({
             type: 'INCREASE',
+            classId: cls.id,
             className: cls.name,
             color: cls.color,
-            currentPercentage: cls.currentPercentage,
+            currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
             targetPercentage: cls.targetPercentage,
-            difference: diff,
+            difference: Math.round(diff * 10) / 10,
             message: `${cls.name} está ${Math.abs(diff).toFixed(1)}% abaixo do target. Priorize aportes nesta classe.`,
             priority: diff < -10 ? 'high' : 'medium'
           });
@@ -167,56 +179,37 @@ class RebalanceService {
     try {
       const allocation = await this.calculateAllocation(userId);
       const targets = [];
+      const newTotal = allocation.totalValue + amount;
 
-      // Ordenar por quem está mais abaixo do target
-      const sortedClasses = [...allocation.allocation]
-        .filter(c => c.targetPercentage > 0)
-        .sort((a, b) => a.difference - b.difference);
-
-      let remaining = amount;
-
-      for (const cls of sortedClasses) {
-        if (remaining <= 0) break;
-        if (cls.difference >= 0) continue; // Já está no target ou acima
-
-        // Calcular quanto falta para atingir o target
-        const targetValue = (cls.targetPercentage / 100) * (allocation.totalValue + amount);
+      // Para cada classe, calcular quanto precisaria para atingir o target
+      for (const cls of allocation.allocation) {
+        if (cls.targetPercentage <= 0) continue;
+        
+        const targetValue = (cls.targetPercentage / 100) * newTotal;
         const needed = targetValue - cls.currentValue;
-
+        
         if (needed > 0) {
-          const toInvest = Math.min(needed, remaining);
-          targets.push({
-            className: cls.name,
-            color: cls.color,
-            amount: toInvest,
-            percentage: (toInvest / amount) * 100
-          });
-          remaining -= toInvest;
-        }
-      }
-
-      // Se sobrou, distribuir proporcionalmente
-      if (remaining > 0) {
-        for (const cls of allocation.allocation) {
-          if (cls.targetPercentage > 0) {
-            const proportional = (cls.targetPercentage / 100) * remaining;
-            const existing = targets.find(t => t.className === cls.name);
-            if (existing) {
-              existing.amount += proportional;
-              existing.percentage = (existing.amount / amount) * 100;
-            } else {
-              targets.push({
-                className: cls.name,
-                color: cls.color,
-                amount: proportional,
-                percentage: (proportional / amount) * 100
-              });
-            }
+          const toInvest = Math.min(needed, amount);
+          const percentage = (toInvest / amount) * 100;
+          
+          if (percentage > 1) { // Só mostrar se for mais de 1%
+            targets.push({
+              classId: cls.id,
+              className: cls.name,
+              color: cls.color,
+              currentPercentage: cls.currentPercentage,
+              targetPercentage: cls.targetPercentage,
+              amount: Math.round(toInvest * 100) / 100,
+              percentage: Math.round(percentage * 10) / 10
+            });
           }
         }
       }
 
-      return targets.filter(t => t.amount > 0);
+      // Ordenar por percentual
+      targets.sort((a, b) => b.percentage - a.percentage);
+
+      return targets;
     } catch (error) {
       console.error('Erro ao calcular contribuição:', error);
       return [];
