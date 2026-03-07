@@ -1,11 +1,10 @@
 const pool = require('../config/database');
 const quotesService = require('../services/quotes.service');
 const rebalanceService = require('../services/rebalance.service');
-const macroService = require('../services/macro.service');
 
 class PortfolioController {
 
-  // Dashboard completo com análise macro
+  // Dashboard completo
   async getDashboard(req, res) {
     try {
       const userId = req.userId;
@@ -41,15 +40,6 @@ class PortfolioController {
         LIMIT 30
       `, [userId]);
 
-      // Buscar análise macro
-      let macroAnalysis = null;
-      try {
-        macroAnalysis = await macroService.getOrCreateAnalysis(userId);
-      } catch (e) {
-        console.error('Erro ao buscar análise macro:', e);
-        macroAnalysis = macroService.getDefaultAnalysis();
-      }
-
       return res.json({
         summary: {
           totalValue: allocation.totalValue,
@@ -63,35 +53,12 @@ class PortfolioController {
         allocation: allocation.allocation,
         passiveIncome: passiveIncome.breakdown,
         recommendations: recommendationsResult.rows,
-        history: historyResult.rows.reverse(),
-        macroAnalysis
+        history: historyResult.rows.reverse()
       });
 
     } catch (error) {
       console.error('Erro ao buscar dashboard:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
-    }
-  }
-
-  // Obter análise macro
-  async getMacroAnalysis(req, res) {
-    try {
-      const analysis = await macroService.getOrCreateAnalysis(req.userId);
-      return res.json(analysis);
-    } catch (error) {
-      console.error('Erro ao buscar análise macro:', error);
-      return res.json(macroService.getDefaultAnalysis());
-    }
-  }
-
-  // Atualizar análise macro (forçar nova geração)
-  async refreshMacroAnalysis(req, res) {
-    try {
-      const analysis = await macroService.refreshAnalysis(req.userId);
-      return res.json(analysis);
-    } catch (error) {
-      console.error('Erro ao atualizar análise macro:', error);
-      return res.status(500).json({ error: 'Erro ao atualizar análise' });
     }
   }
 
@@ -230,7 +197,7 @@ class PortfolioController {
           weightedYield += (cls.expectedYield * cls.currentValue / allocation.totalValue);
         }
       }
-      weightedYield = weightedYield || 10;
+      weightedYield = weightedYield || 10; // Default 10% se não houver dados
 
       // Gerar projeção
       const projection = [];

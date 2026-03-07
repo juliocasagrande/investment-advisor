@@ -11,20 +11,21 @@ class SettingsController {
       );
 
       if (result.rows.length === 0) {
-        // Criar configurações padrão se não existir
         const newSettings = await pool.query(`
           INSERT INTO user_settings (user_id) VALUES ($1) RETURNING *
         `, [req.userId]);
         return res.json({ settings: newSettings.rows[0] });
       }
 
-      // Ocultar tokens parcialmente
       const settings = result.rows[0];
       if (settings.brapi_token) {
         settings.brapi_token_masked = '****' + settings.brapi_token.slice(-4);
       }
       if (settings.alphavantage_key) {
         settings.alphavantage_key_masked = '****' + settings.alphavantage_key.slice(-4);
+      }
+      if (settings.groq_api_key) {
+        settings.groq_api_key_masked = '****' + settings.groq_api_key.slice(-4);
       }
 
       return res.json({ settings });
@@ -44,7 +45,8 @@ class SettingsController {
         riskProfile,
         monthlyContribution,
         brapiToken,
-        alphavantageKey
+        alphavantageKey,
+        grokApiKey
       } = req.body;
 
       const result = await pool.query(`
@@ -55,8 +57,9 @@ class SettingsController {
           monthly_contribution = COALESCE($4, monthly_contribution),
           brapi_token = COALESCE($5, brapi_token),
           alphavantage_key = COALESCE($6, alphavantage_key),
+          groq_api_key = COALESCE($7, groq_api_key),
           updated_at = NOW()
-        WHERE user_id = $7
+        WHERE user_id = $8
         RETURNING *
       `, [
         rebalanceThreshold,
@@ -65,6 +68,7 @@ class SettingsController {
         monthlyContribution,
         brapiToken,
         alphavantageKey,
+        grokApiKey,
         req.userId
       ]);
 
@@ -105,6 +109,32 @@ class SettingsController {
         } else {
           result = { success: false, message: 'Não foi possível obter cotação. Verifique a API key.' };
         }
+      } else if (api === 'groq') {
+        // Testar Groq API
+        try {
+          const fetch = (await import('node-fetch')).default;
+          const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: 'llama-3.3-70b-versatile',
+              messages: [{ role: 'user', content: 'Responda apenas: OK' }],
+              max_tokens: 10
+            })
+          });
+          
+          if (response.ok) {
+            result = { success: true, message: 'Conexão com Groq OK!' };
+          } else {
+            const error = await response.json();
+            result = { success: false, message: error.error?.message || 'Erro na autenticação' };
+          }
+        } catch (e) {
+          result = { success: false, message: 'Erro ao conectar com Groq API' };
+        }
       }
 
       return res.json(result);
@@ -118,14 +148,13 @@ class SettingsController {
   // Exportar dados
   async exportData(req, res) {
     try {
-      const { format = 'json' } = req.query;
-
-      // Buscar todos os dados do usuário
-      const [classes, assets, transactions, history] = await Promise.all([
+      const [classes, assets, transactions, history, dividends, goals] = await Promise.all([
         pool.query('SELECT * FROM asset_classes WHERE user_id = $1', [req.userId]),
         pool.query('SELECT * FROM assets WHERE user_id = $1', [req.userId]),
         pool.query('SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC', [req.userId]),
-        pool.query('SELECT * FROM portfolio_history WHERE user_id = $1 ORDER BY date DESC', [req.userId])
+        pool.query('SELECT * FROM portfolio_history WHERE user_id = $1 ORDER BY date DESC', [req.userId]),
+        pool.query('SELECT * FROM dividends WHERE user_id = $1 ORDER BY payment_date DESC', [req.userId]).catch(() => ({ rows: [] })),
+        pool.query('SELECT * FROM goals WHERE user_id = $1', [req.userId]).catch(() => ({ rows: [] }))
       ]);
 
       const data = {
@@ -133,17 +162,12 @@ class SettingsController {
         assetClasses: classes.rows,
         assets: assets.rows,
         transactions: transactions.rows,
-        portfolioHistory: history.rows
+        portfolioHistory: history.rows,
+        dividends: dividends.rows,
+        goals: goals.rows
       };
 
-      if (format === 'json') {
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Content-Disposition', 'attachment; filename=investment-advisor-export.json');
-        return res.json(data);
-      }
-
-      // TODO: Implementar CSV se necessário
-
+      res.setHeader('Content-Type', 'application/json');
       return res.json(data);
 
     } catch (error) {
@@ -152,7 +176,7 @@ class SettingsController {
     }
   }
 
-  // Importar dados (backup)
+  // Importar dados
   async importData(req, res) {
     const client = await pool.connect();
     
@@ -166,60 +190,60 @@ class SettingsController {
       await client.query('BEGIN');
 
       if (overwrite) {
-        // Limpar dados existentes
+        await client.query('DELETE FROM dividends WHERE user_id = $1', [req.userId]).catch(() => {});
         await client.query('DELETE FROM transactions WHERE user_id = $1', [req.userId]);
         await client.query('DELETE FROM assets WHERE user_id = $1', [req.userId]);
         await client.query('DELETE FROM asset_classes WHERE user_id = $1', [req.userId]);
+        await client.query('DELETE FROM goals WHERE user_id = $1', [req.userId]).catch(() => {});
       }
 
-      // Mapear IDs antigos para novos
       const classIdMap = {};
 
-      // Importar classes
       for (const cls of data.assetClasses) {
         const result = await client.query(`
-          INSERT INTO asset_classes (user_id, name, target_percentage, color, description, expected_yield)
-          VALUES ($1, $2, $3, $4, $5, $6)
+          INSERT INTO asset_classes (user_id, name, target_percentage, color, description, expected_yield, icon, category)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
           ON CONFLICT (user_id, name) DO UPDATE SET
             target_percentage = EXCLUDED.target_percentage,
             color = EXCLUDED.color
           RETURNING id
-        `, [req.userId, cls.name, cls.target_percentage, cls.color, cls.description, cls.expected_yield]);
+        `, [req.userId, cls.name, cls.target_percentage, cls.color, cls.description, cls.expected_yield, cls.icon, cls.category]);
         
         classIdMap[cls.id] = result.rows[0].id;
       }
 
-      // Importar ativos
       const assetIdMap = {};
       for (const asset of data.assets) {
         const newClassId = classIdMap[asset.asset_class_id];
         if (!newClassId) continue;
 
         const result = await client.query(`
-          INSERT INTO assets (user_id, asset_class_id, ticker, name, type, market, quantity, average_price, current_price, notes)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          INSERT INTO assets (user_id, asset_class_id, ticker, name, type, market, quantity, average_price, current_price, notes,
+            fixed_income_type, indexer, rate, maturity_date, issuer, sector, wallet_address, network, present_value)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
           ON CONFLICT (user_id, ticker) DO UPDATE SET
             quantity = EXCLUDED.quantity,
             average_price = EXCLUDED.average_price
           RETURNING id
         `, [
           req.userId, newClassId, asset.ticker, asset.name, asset.type, asset.market,
-          asset.quantity, asset.average_price, asset.current_price, asset.notes
+          asset.quantity, asset.average_price, asset.current_price, asset.notes,
+          asset.fixed_income_type, asset.indexer, asset.rate, asset.maturity_date, asset.issuer,
+          asset.sector, asset.wallet_address, asset.network, asset.present_value
         ]);
 
         assetIdMap[asset.id] = result.rows[0].id;
       }
 
-      // Importar transações
       if (data.transactions) {
         for (const tx of data.transactions) {
           const newAssetId = assetIdMap[tx.asset_id];
           if (!newAssetId) continue;
 
           await client.query(`
-            INSERT INTO transactions (user_id, asset_id, type, quantity, price, total, date, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          `, [req.userId, newAssetId, tx.type, tx.quantity, tx.price, tx.total, tx.date, tx.notes]);
+            INSERT INTO transactions (user_id, asset_id, type, quantity, price, total, date, notes, realized_gain, realized_gain_percent)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `, [req.userId, newAssetId, tx.type, tx.quantity, tx.price, tx.total, tx.date, tx.notes, tx.realized_gain, tx.realized_gain_percent]);
         }
       }
 

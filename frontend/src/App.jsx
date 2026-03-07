@@ -9,6 +9,9 @@ import Dashboard from './pages/Dashboard';
 import Portfolio from './pages/Portfolio';
 import Assets from './pages/Assets';
 import Transactions from './pages/Transactions';
+import Dividends from './pages/Dividends';
+import Goals from './pages/Goals';
+import TaxReport from './pages/TaxReport';
 import Settings from './pages/Settings';
 import Layout from './components/Layout';
 
@@ -87,6 +90,9 @@ function App() {
           <Route path="portfolio" element={<Portfolio />} />
           <Route path="assets" element={<Assets />} />
           <Route path="transactions" element={<Transactions />} />
+          <Route path="dividends" element={<Dividends />} />
+          <Route path="goals" element={<Goals />} />
+          <Route path="tax-report" element={<TaxReport />} />
           <Route path="settings" element={<Settings />} />
         </Route>
 

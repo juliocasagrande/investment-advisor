@@ -5,6 +5,12 @@
 @layer base {
   body {
     @apply bg-slate-950 text-slate-100 antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  /* Evitar zoom em inputs no iOS */
+  input, select, textarea {
+    font-size: 16px !important;
   }
   
   ::-webkit-scrollbar {
@@ -26,27 +32,30 @@
 
 @layer components {
   .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 
-           disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply px-4 py-2.5 rounded-xl font-medium transition-all duration-200 
+           disabled:opacity-50 disabled:cursor-not-allowed
+           active:scale-[0.98] touch-manipulation;
+    min-height: 44px; /* Touch target mínimo */
   }
   
   .btn-primary {
-    @apply bg-emerald-600 hover:bg-emerald-500 text-white;
+    @apply bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white;
   }
   
   .btn-secondary {
-    @apply bg-slate-700 hover:bg-slate-600 text-slate-200;
+    @apply bg-slate-700 hover:bg-slate-600 active:bg-slate-800 text-slate-200;
   }
   
   .btn-danger {
-    @apply bg-red-600 hover:bg-red-500 text-white;
+    @apply bg-red-600 hover:bg-red-500 active:bg-red-700 text-white;
   }
   
   .input {
-    @apply w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg 
+    @apply w-full px-3 py-2.5 sm:px-4 sm:py-3 bg-slate-800 border border-slate-700 rounded-xl 
            text-slate-100 placeholder-slate-500
            focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent
            transition-all duration-200;
+    min-height: 44px; /* Touch target mínimo */
   }
   
   .card {
@@ -54,7 +63,7 @@
   }
   
   .stat-card {
-    @apply p-4 rounded-2xl border;
+    @apply p-3 sm:p-4 rounded-2xl border;
   }
 }
 
@@ -88,7 +97,7 @@ input[type="range"] {
 }
 
 input[type="range"]::-webkit-slider-thumb {
-  @apply w-4 h-4 bg-emerald-500 rounded-full appearance-none cursor-pointer
+  @apply w-5 h-5 bg-emerald-500 rounded-full appearance-none cursor-pointer
          hover:bg-emerald-400 transition-colors;
 }
 
@@ -99,4 +108,78 @@ input[type="range"]::-webkit-slider-thumb {
   pointer-events: none;
   opacity: 0.15;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  z-index: -1;
+}
+
+/* Safe area para bottom navigation */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Mobile table scroll indicator */
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Esconder scrollbar em mobile mas permitir scroll */
+@media (max-width: 768px) {
+  .overflow-x-auto::-webkit-scrollbar {
+    display: none;
+  }
+  
+  .overflow-x-auto {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Color picker fix */
+input[type="color"] {
+  -webkit-appearance: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 8px;
+}
+
+/* Date input fix para mobile */
+input[type="date"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Select arrow */
+select {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 0.5rem center;
+  background-repeat: no-repeat;
+  background-size: 1.5em 1.5em;
+  padding-right: 2.5rem;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Modal fullscreen no mobile */
+@media (max-width: 640px) {
+  .modal-fullscreen-mobile {
+    @apply rounded-b-none max-h-[90vh];
+  }
+}
+
+/* Recharts responsivo */
+.recharts-wrapper {
+  @apply w-full;
+}
+
+/* Fix para gráficos no mobile */
+.recharts-surface {
+  overflow: visible;
 }

@@ -1,37 +1,23 @@
 const express = require('express');
-const { body } = require('express-validator');
+const router = express.Router();
+
 const authMiddleware = require('../middleware/auth');
 const authController = require('../controllers/auth.controller');
 const assetsController = require('../controllers/assets.controller');
 const portfolioController = require('../controllers/portfolio.controller');
 const settingsController = require('../controllers/settings.controller');
+const dividendsController = require('../controllers/dividends.controller');
+const goalsController = require('../controllers/goals.controller');
+const taxReportController = require('../controllers/tax-report.controller');
 
-const router = express.Router();
-
-// ==================== AUTH ====================
-router.post('/auth/register', [
-  body('name').notEmpty().withMessage('Nome é obrigatório'),
-  body('email').isEmail().withMessage('Email inválido'),
-  body('password').isLength({ min: 6 }).withMessage('Senha deve ter pelo menos 6 caracteres')
-], authController.register);
-
-router.post('/auth/login', [
-  body('email').isEmail().withMessage('Email inválido'),
-  body('password').notEmpty().withMessage('Senha é obrigatória')
-], authController.login);
-
+// Auth routes (públicas)
+router.post('/auth/register', authController.register);
+router.post('/auth/login', authController.login);
 router.get('/auth/me', authMiddleware, authController.me);
 router.put('/auth/profile', authMiddleware, authController.updateProfile);
 router.put('/auth/password', authMiddleware, authController.changePassword);
 
-// ==================== ASSET CLASSES ====================
-router.get('/classes', authMiddleware, assetsController.listClasses);
-router.get('/classes/templates', authMiddleware, assetsController.getClassTemplates);
-router.post('/classes', authMiddleware, assetsController.createClass);
-router.put('/classes/:id', authMiddleware, assetsController.updateClass);
-router.delete('/classes/:id', authMiddleware, assetsController.deleteClass);
-
-// ==================== ASSETS ====================
+// Assets routes
 router.get('/assets', authMiddleware, assetsController.listAssets);
 router.get('/assets/:id', authMiddleware, assetsController.getAsset);
 router.post('/assets', authMiddleware, assetsController.createAsset);
@@ -39,34 +25,51 @@ router.put('/assets/:id', authMiddleware, assetsController.updateAsset);
 router.delete('/assets/:id', authMiddleware, assetsController.deleteAsset);
 router.post('/assets/:id/transaction', authMiddleware, assetsController.registerTransaction);
 
-// ==================== TRANSACTIONS ====================
+// Classes routes
+router.get('/classes', authMiddleware, assetsController.listClasses);
+router.get('/classes/templates', authMiddleware, assetsController.getClassTemplates);
+router.post('/classes', authMiddleware, assetsController.createClass);
+router.put('/classes/:id', authMiddleware, assetsController.updateClass);
+router.delete('/classes/:id', authMiddleware, assetsController.deleteClass);
+
+// Transactions routes
 router.get('/transactions', authMiddleware, assetsController.listTransactions);
 router.post('/transactions', authMiddleware, assetsController.createTransaction);
 router.get('/transactions/realized-gains', authMiddleware, assetsController.getRealizedGains);
 
-// ==================== PORTFOLIO ====================
+// Portfolio routes
 router.get('/portfolio/dashboard', authMiddleware, portfolioController.getDashboard);
-router.post('/portfolio/sync', authMiddleware, portfolioController.syncAll);
-router.get('/portfolio/rebalance', authMiddleware, portfolioController.getRebalanceSuggestions);
+router.post('/portfolio/sync', authMiddleware, portfolioController.syncQuotes);
+router.get('/portfolio/rebalance', authMiddleware, portfolioController.getRebalance);
 router.post('/portfolio/contribution', authMiddleware, portfolioController.calculateContribution);
 router.get('/portfolio/projection', authMiddleware, portfolioController.getProjection);
 router.get('/portfolio/history', authMiddleware, portfolioController.getHistory);
 router.post('/portfolio/recommendations/:id/dismiss', authMiddleware, portfolioController.dismissRecommendation);
-
-// ==================== MACRO ANALYSIS ====================
 router.get('/portfolio/macro', authMiddleware, portfolioController.getMacroAnalysis);
 router.post('/portfolio/macro/refresh', authMiddleware, portfolioController.refreshMacroAnalysis);
 
-// ==================== SETTINGS ====================
+// Dividends routes
+router.get('/dividends', authMiddleware, dividendsController.list);
+router.post('/dividends', authMiddleware, dividendsController.create);
+router.put('/dividends/:id', authMiddleware, dividendsController.update);
+router.delete('/dividends/:id', authMiddleware, dividendsController.delete);
+router.get('/dividends/summary', authMiddleware, dividendsController.getSummary);
+
+// Goals routes
+router.get('/goals', authMiddleware, goalsController.list);
+router.post('/goals', authMiddleware, goalsController.create);
+router.put('/goals/:id', authMiddleware, goalsController.update);
+router.delete('/goals/:id', authMiddleware, goalsController.delete);
+
+// Tax Report routes
+router.get('/tax-report', authMiddleware, taxReportController.getReport);
+router.get('/tax-report/export', authMiddleware, taxReportController.exportReport);
+
+// Settings routes
 router.get('/settings', authMiddleware, settingsController.getSettings);
 router.put('/settings', authMiddleware, settingsController.updateSettings);
 router.post('/settings/test-api', authMiddleware, settingsController.testApiConnection);
 router.get('/settings/export', authMiddleware, settingsController.exportData);
 router.post('/settings/import', authMiddleware, settingsController.importData);
-
-// ==================== HEALTH CHECK ====================
-router.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
 
 module.exports = router;
