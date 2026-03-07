@@ -15,7 +15,8 @@ import {
   DollarSign,
   Target,
   FileText,
-  ChevronRight
+  ChevronRight,
+  Search
 } from 'lucide-react';
 
 const navItems = [
@@ -24,6 +25,7 @@ const navItems = [
   { path: '/assets', label: 'Ativos', icon: Briefcase },
   { path: '/transactions', label: 'Transações', icon: Receipt },
   { path: '/dividends', label: 'Dividendos', icon: DollarSign },
+  { path: '/screener', label: 'Screener', icon: Search },
   { path: '/goals', label: 'Metas', icon: Target },
   { path: '/tax-report', label: 'Relatório IR', icon: FileText },
   { path: '/settings', label: 'Configurações', icon: Settings },
@@ -33,7 +35,7 @@ const navItems = [
 const bottomNavItems = [
   { path: '/dashboard', label: 'Home', icon: LayoutDashboard },
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
-  { path: '/assets', label: 'Ativos', icon: Briefcase },
+  { path: '/screener', label: 'Screener', icon: Search },
   { path: '/dividends', label: 'Dividendos', icon: DollarSign },
   { path: '/settings', label: 'Config', icon: Settings },
 ];

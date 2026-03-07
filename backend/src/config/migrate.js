@@ -162,6 +162,19 @@ async function migrate() {
       )
     `);
 
+    // Tabela de filtros do screener
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS screener_filters (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        name VARCHAR(100) NOT NULL,
+        filters JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, name)
+      )
+    `);
+
     // Migrações incrementais - adicionar colunas se não existirem
     console.log('📦 Verificando colunas adicionais...');
 

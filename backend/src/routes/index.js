@@ -9,6 +9,7 @@ const settingsController = require('../controllers/settings.controller');
 const dividendsController = require('../controllers/dividends.controller');
 const goalsController = require('../controllers/goals.controller');
 const taxReportController = require('../controllers/tax-report.controller');
+const screenerController = require('../controllers/screener.controller');
 
 // Auth routes (públicas)
 router.post('/auth/register', authController.register);
@@ -71,5 +72,13 @@ router.put('/settings', authMiddleware, settingsController.updateSettings);
 router.post('/settings/test-api', authMiddleware, settingsController.testApiConnection);
 router.get('/settings/export', authMiddleware, settingsController.exportData);
 router.post('/settings/import', authMiddleware, settingsController.importData);
+
+// Screener routes
+router.post('/screener/search', authMiddleware, screenerController.search);
+router.post('/screener/analyze', authMiddleware, screenerController.analyzePositions);
+router.post('/screener/suggestions', authMiddleware, screenerController.getSuggestions);
+router.get('/screener/fundamentals/:ticker', authMiddleware, screenerController.getFundamentals);
+router.post('/screener/filters', authMiddleware, screenerController.saveFilters);
+router.get('/screener/filters', authMiddleware, screenerController.listFilters);
 
 module.exports = router;

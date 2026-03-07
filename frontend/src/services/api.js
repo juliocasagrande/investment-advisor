@@ -109,4 +109,14 @@ export const settingsService = {
   importData: (data, merge) => api.post('/settings/import', { data, merge })
 };
 
+// Screener
+export const screenerService = {
+  search: (tickers, filters) => api.post('/screener/search', { tickers, filters }),
+  analyzePositions: (filters) => api.post('/screener/analyze', { filters }),
+  getSuggestions: (ticker, filters) => api.post('/screener/suggestions', { ticker, filters }),
+  getFundamentals: (ticker) => api.get(`/screener/fundamentals/${ticker}`),
+  saveFilters: (name, filters) => api.post('/screener/filters', { name, filters }),
+  listFilters: () => api.get('/screener/filters'),
+};
+
 export default api;

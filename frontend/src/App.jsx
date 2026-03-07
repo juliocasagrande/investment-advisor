@@ -12,6 +12,7 @@ import Transactions from './pages/Transactions';
 import Dividends from './pages/Dividends';
 import Goals from './pages/Goals';
 import TaxReport from './pages/TaxReport';
+import Screener from './pages/Screener';
 import Settings from './pages/Settings';
 import Layout from './components/Layout';
 
@@ -93,6 +94,7 @@ function App() {
           <Route path="dividends" element={<Dividends />} />
           <Route path="goals" element={<Goals />} />
           <Route path="tax-report" element={<TaxReport />} />
+          <Route path="screener" element={<Screener />} />
           <Route path="settings" element={<Settings />} />
         </Route>
 
