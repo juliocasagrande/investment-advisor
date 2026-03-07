@@ -60,10 +60,10 @@ Retorne APENAS um JSON válido (sem markdown, sem texto adicional) com esta estr
     {
       "title": "Título do cenário",
       "description": "Descrição breve do cenário e impactos",
-      "probability": "alta|media|baixa",
+      "probability": "alta",
       "benefitedAssets": ["Renda Fixa", "Ações BR"],
-      "riskLevel": "baixo|medio|alto",
-      "timeHorizon": "curto|medio|longo"
+      "riskLevel": "baixo",
+      "timeHorizon": "curto"
     }
   ],
   "suggestedAllocation": {
@@ -88,7 +88,7 @@ A soma da alocação sugerida deve ser 100%.`;
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
+          model: 'llama3-70b-8192',
           messages: [
             { 
               role: 'system', 
