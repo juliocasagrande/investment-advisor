@@ -5,6 +5,25 @@ class AssetsController {
 
   // ==================== ASSET CLASSES ====================
 
+  // Templates de classes de ativos
+  async getClassTemplates(req, res) {
+    const templates = [
+      { name: 'Renda Fixa', color: '#10B981', expectedYield: 12, icon: '📊', category: 'fixed_income', description: 'CDBs, LCIs, LCAs, Tesouro Direto' },
+      { name: 'Ações BR', color: '#3B82F6', expectedYield: 15, icon: '🇧🇷', category: 'stocks_br', description: 'Ações da B3' },
+      { name: 'FIIs', color: '#8B5CF6', expectedYield: 10, icon: '🏢', category: 'fiis', description: 'Fundos Imobiliários' },
+      { name: 'Ações EUA', color: '#EC4899', expectedYield: 12, icon: '🇺🇸', category: 'stocks_us', description: 'Stocks e ETFs americanos' },
+      { name: 'REITs', color: '#F59E0B', expectedYield: 8, icon: '🏠', category: 'reits', description: 'Real Estate Investment Trusts' },
+      { name: 'Cripto', color: '#F97316', expectedYield: 20, icon: '₿', category: 'crypto', description: 'Bitcoin, Ethereum e altcoins' },
+      { name: 'Metais', color: '#EAB308', expectedYield: 5, icon: '🥇', category: 'metals', description: 'Ouro, Prata' },
+      { name: 'ETFs BR', color: '#06B6D4', expectedYield: 12, icon: '📈', category: 'etfs', description: 'ETFs da B3' },
+      { name: 'Previdência', color: '#14B8A6', expectedYield: 10, icon: '🏦', category: 'pension', description: 'PGBL, VGBL' },
+      { name: 'Internacional', color: '#6366F1', expectedYield: 10, icon: '🌍', category: 'international', description: 'Fundos e ETFs internacionais' },
+      { name: 'Caixa', color: '#64748B', expectedYield: 0, icon: '💵', category: 'cash', description: 'Reserva de emergência' }
+    ];
+
+    return res.json({ templates });
+  }
+
   // Listar classes de ativos
   async listClasses(req, res) {
     try {
@@ -12,7 +31,7 @@ class AssetsController {
         SELECT 
           ac.*,
           COUNT(a.id) as asset_count,
-          COALESCE(SUM(a.quantity * a.current_price), 0) as total_value,
+          COALESCE(SUM(a.quantity * COALESCE(a.current_price, a.average_price)), 0) as total_value,
           COALESCE(SUM(a.quantity * a.average_price), 0) as total_invested
         FROM asset_classes ac
         LEFT JOIN assets a ON a.asset_class_id = ac.id
@@ -32,13 +51,13 @@ class AssetsController {
   // Criar classe de ativo
   async createClass(req, res) {
     try {
-      const { name, targetPercentage, color, description, expectedYield } = req.body;
+      const { name, targetPercentage, color, description, expectedYield, icon, category } = req.body;
 
       const result = await pool.query(`
-        INSERT INTO asset_classes (user_id, name, target_percentage, color, description, expected_yield)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO asset_classes (user_id, name, target_percentage, color, description, expected_yield, icon, category)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
-      `, [req.userId, name, targetPercentage || 0, color || '#3B82F6', description, expectedYield || 0]);
+      `, [req.userId, name, targetPercentage || 0, color || '#3B82F6', description, expectedYield || 0, icon, category]);
 
       return res.status(201).json({ class: result.rows[0] });
 
@@ -55,7 +74,7 @@ class AssetsController {
   async updateClass(req, res) {
     try {
       const { id } = req.params;
-      const { name, targetPercentage, color, description, expectedYield } = req.body;
+      const { name, targetPercentage, color, description, expectedYield, icon, category } = req.body;
 
       const result = await pool.query(`
         UPDATE asset_classes 
@@ -64,10 +83,12 @@ class AssetsController {
             color = COALESCE($3, color),
             description = COALESCE($4, description),
             expected_yield = COALESCE($5, expected_yield),
+            icon = COALESCE($6, icon),
+            category = COALESCE($7, category),
             updated_at = NOW()
-        WHERE id = $6 AND user_id = $7
+        WHERE id = $8 AND user_id = $9
         RETURNING *
-      `, [name, targetPercentage, color, description, expectedYield, id, req.userId]);
+      `, [name, targetPercentage, color, description, expectedYield, icon, category, id, req.userId]);
 
       if (result.rows.length === 0) {
         return res.status(404).json({ error: 'Classe não encontrada' });
@@ -86,7 +107,6 @@ class AssetsController {
     try {
       const { id } = req.params;
 
-      // Verificar se há ativos na classe
       const assetsCheck = await pool.query(
         'SELECT COUNT(*) FROM assets WHERE asset_class_id = $1',
         [id]
@@ -127,9 +147,10 @@ class AssetsController {
           a.*,
           ac.name as class_name,
           ac.color as class_color,
-          (a.quantity * a.current_price) as current_value,
+          ac.category as class_category,
+          (a.quantity * COALESCE(a.current_price, a.average_price)) as current_value,
           (a.quantity * a.average_price) as invested_value,
-          ((a.current_price - a.average_price) / NULLIF(a.average_price, 0) * 100) as gain_percentage
+          ((COALESCE(a.current_price, a.average_price) - a.average_price) / NULLIF(a.average_price, 0) * 100) as gain_percentage
         FROM assets a
         JOIN asset_classes ac ON a.asset_class_id = ac.id
         WHERE a.user_id = $1
@@ -142,7 +163,7 @@ class AssetsController {
         params.push(classId);
       }
 
-      query += ' ORDER BY (a.quantity * a.current_price) DESC';
+      query += ' ORDER BY (a.quantity * COALESCE(a.current_price, a.average_price)) DESC';
 
       const result = await pool.query(query, params);
 
@@ -173,7 +194,6 @@ class AssetsController {
         return res.status(404).json({ error: 'Ativo não encontrado' });
       }
 
-      // Buscar transações do ativo
       const transactions = await pool.query(
         'SELECT * FROM transactions WHERE asset_id = $1 ORDER BY date DESC LIMIT 50',
         [id]
@@ -201,10 +221,19 @@ class AssetsController {
         market = 'BR',
         quantity = 0, 
         averagePrice = 0,
-        notes 
+        currentPrice,
+        notes,
+        fixedIncomeType,
+        indexer,
+        rate,
+        maturityDate,
+        issuer,
+        sector,
+        walletAddress,
+        network,
+        presentValue
       } = req.body;
 
-      // Verificar se a classe pertence ao usuário
       const classCheck = await pool.query(
         'SELECT id FROM asset_classes WHERE id = $1 AND user_id = $2',
         [assetClassId, req.userId]
@@ -214,42 +243,46 @@ class AssetsController {
         return res.status(400).json({ error: 'Classe de ativo inválida' });
       }
 
-      // Tentar buscar cotação atual
-      let currentPrice = averagePrice;
-      try {
-        const settings = await pool.query(
-          'SELECT brapi_token, alphavantage_key FROM user_settings WHERE user_id = $1',
-          [req.userId]
-        );
-        const { brapi_token, alphavantage_key } = settings.rows[0] || {};
-        
-        const quote = await quotesService.getQuote(
-          ticker.toUpperCase(), 
-          market, 
-          brapi_token || process.env.BRAPI_TOKEN,
-          alphavantage_key || process.env.ALPHAVANTAGE_KEY
-        );
-        
-        if (quote && quote.price) {
-          currentPrice = quote.price;
+      let finalCurrentPrice = currentPrice || averagePrice;
+      if (!currentPrice && market !== 'CRYPTO' && ticker) {
+        try {
+          const settings = await pool.query(
+            'SELECT brapi_token, alphavantage_key FROM user_settings WHERE user_id = $1',
+            [req.userId]
+          );
+          const { brapi_token, alphavantage_key } = settings.rows[0] || {};
+          
+          const quote = await quotesService.getQuote(
+            ticker.toUpperCase(), 
+            market, 
+            brapi_token || process.env.BRAPI_TOKEN,
+            alphavantage_key || process.env.ALPHAVANTAGE_KEY
+          );
+          
+          if (quote && quote.price) {
+            finalCurrentPrice = quote.price;
+          }
+        } catch (e) {
+          console.log('Não foi possível buscar cotação:', e.message);
         }
-      } catch (e) {
-        console.log('Não foi possível buscar cotação:', e.message);
       }
 
       const result = await pool.query(`
         INSERT INTO assets (
           user_id, asset_class_id, ticker, name, type, market, 
-          quantity, average_price, current_price, notes
+          quantity, average_price, current_price, notes,
+          fixed_income_type, indexer, rate, maturity_date, issuer,
+          sector, wallet_address, network, present_value
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         RETURNING *
       `, [
-        req.userId, assetClassId, ticker.toUpperCase(), name, type, market,
-        quantity, averagePrice, currentPrice, notes
+        req.userId, assetClassId, ticker ? ticker.toUpperCase() : null, name, type, market,
+        quantity, averagePrice, finalCurrentPrice, notes,
+        fixedIncomeType, indexer, rate, maturityDate || null, issuer,
+        sector, walletAddress, network, presentValue
       ]);
 
-      // Se houver quantidade, criar transação inicial
       if (quantity > 0 && averagePrice > 0) {
         await pool.query(`
           INSERT INTO transactions (user_id, asset_id, type, quantity, price, total, date)
@@ -272,7 +305,11 @@ class AssetsController {
   async updateAsset(req, res) {
     try {
       const { id } = req.params;
-      const { assetClassId, name, type, notes } = req.body;
+      const { 
+        assetClassId, name, type, notes, quantity, averagePrice, currentPrice,
+        fixedIncomeType, indexer, rate, maturityDate, issuer, sector,
+        walletAddress, network, presentValue
+      } = req.body;
 
       const result = await pool.query(`
         UPDATE assets 
@@ -280,10 +317,26 @@ class AssetsController {
             name = COALESCE($2, name),
             type = COALESCE($3, type),
             notes = COALESCE($4, notes),
+            quantity = COALESCE($5, quantity),
+            average_price = COALESCE($6, average_price),
+            current_price = COALESCE($7, current_price),
+            fixed_income_type = COALESCE($8, fixed_income_type),
+            indexer = COALESCE($9, indexer),
+            rate = COALESCE($10, rate),
+            maturity_date = COALESCE($11, maturity_date),
+            issuer = COALESCE($12, issuer),
+            sector = COALESCE($13, sector),
+            wallet_address = COALESCE($14, wallet_address),
+            network = COALESCE($15, network),
+            present_value = COALESCE($16, present_value),
             updated_at = NOW()
-        WHERE id = $5 AND user_id = $6
+        WHERE id = $17 AND user_id = $18
         RETURNING *
-      `, [assetClassId, name, type, notes, id, req.userId]);
+      `, [
+        assetClassId, name, type, notes, quantity, averagePrice, currentPrice,
+        fixedIncomeType, indexer, rate, maturityDate, issuer, sector,
+        walletAddress, network, presentValue, id, req.userId
+      ]);
 
       if (result.rows.length === 0) {
         return res.status(404).json({ error: 'Ativo não encontrado' });
@@ -307,7 +360,6 @@ class AssetsController {
 
       await client.query('BEGIN');
 
-      // Verificar se o ativo existe
       const assetResult = await client.query(
         'SELECT * FROM assets WHERE id = $1 AND user_id = $2',
         [id, req.userId]
@@ -321,9 +373,10 @@ class AssetsController {
       const asset = assetResult.rows[0];
       let newQuantity = parseFloat(asset.quantity);
       let newAveragePrice = parseFloat(asset.average_price);
+      let realizedGain = null;
+      let realizedGainPercent = null;
 
       if (type === 'BUY') {
-        // Calcular novo preço médio
         const totalCurrent = newQuantity * newAveragePrice;
         const totalNew = quantity * price;
         newQuantity += quantity;
@@ -333,30 +386,39 @@ class AssetsController {
           await client.query('ROLLBACK');
           return res.status(400).json({ error: 'Quantidade insuficiente para venda' });
         }
+        
+        realizedGain = (price - newAveragePrice) * quantity;
+        realizedGainPercent = newAveragePrice > 0 ? ((price - newAveragePrice) / newAveragePrice) * 100 : 0;
+        
         newQuantity -= quantity;
-        // Preço médio não muda na venda
       }
 
-      // Atualizar ativo
       await client.query(`
         UPDATE assets 
         SET quantity = $1, average_price = $2, updated_at = NOW()
         WHERE id = $3
       `, [newQuantity, newAveragePrice, id]);
 
-      // Registrar transação
       const transactionResult = await client.query(`
-        INSERT INTO transactions (user_id, asset_id, type, quantity, price, total, date, notes)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO transactions (user_id, asset_id, type, quantity, price, total, date, notes, average_cost_at_sale, realized_gain, realized_gain_percent)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *
-      `, [req.userId, id, type, quantity, price, quantity * price, date || new Date(), notes]);
+      `, [
+        req.userId, id, type, quantity, price, quantity * price, 
+        date || new Date(), notes,
+        type === 'SELL' ? asset.average_price : null,
+        realizedGain,
+        realizedGainPercent
+      ]);
 
       await client.query('COMMIT');
 
       return res.status(201).json({ 
         transaction: transactionResult.rows[0],
         newQuantity,
-        newAveragePrice
+        newAveragePrice,
+        realizedGain,
+        realizedGainPercent
       });
 
     } catch (error) {
@@ -366,6 +428,19 @@ class AssetsController {
     } finally {
       client.release();
     }
+  }
+
+  // Criar transação diretamente (wrapper)
+  async createTransaction(req, res) {
+    const { assetId, type, quantity, price, date, notes } = req.body;
+
+    if (!assetId) {
+      return res.status(400).json({ error: 'assetId é obrigatório' });
+    }
+
+    req.params = { id: assetId };
+    req.body = { type, quantity, price, date, notes };
+    return this.registerTransaction(req, res);
   }
 
   // Deletar ativo
@@ -389,6 +464,8 @@ class AssetsController {
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
+
+  // ==================== TRANSACTIONS ====================
 
   // Listar transações
   async listTransactions(req, res) {
@@ -438,6 +515,65 @@ class AssetsController {
 
     } catch (error) {
       console.error('Erro ao listar transações:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+
+  // Obter lucros realizados agrupados
+  async getRealizedGains(req, res) {
+    try {
+      const { groupBy = 'month', year } = req.query;
+
+      let dateFormat;
+      switch (groupBy) {
+        case 'day':
+          dateFormat = 'YYYY-MM-DD';
+          break;
+        case 'year':
+          dateFormat = 'YYYY';
+          break;
+        default:
+          dateFormat = 'YYYY-MM';
+      }
+
+      let query = `
+        SELECT 
+          TO_CHAR(date, '${dateFormat}') as period,
+          SUM(CASE WHEN realized_gain > 0 THEN realized_gain ELSE 0 END) as total_gains,
+          SUM(CASE WHEN realized_gain < 0 THEN realized_gain ELSE 0 END) as total_losses,
+          SUM(COALESCE(realized_gain, 0)) as net_result,
+          COUNT(*) as transaction_count
+        FROM transactions
+        WHERE user_id = $1 AND type = 'SELL' AND realized_gain IS NOT NULL
+      `;
+
+      const params = [req.userId];
+
+      if (year) {
+        query += ` AND EXTRACT(YEAR FROM date) = $2`;
+        params.push(year);
+      }
+
+      query += ` GROUP BY TO_CHAR(date, '${dateFormat}') ORDER BY period DESC`;
+
+      const result = await pool.query(query, params);
+
+      const totals = await pool.query(`
+        SELECT 
+          SUM(CASE WHEN realized_gain > 0 THEN realized_gain ELSE 0 END) as total_gains,
+          SUM(CASE WHEN realized_gain < 0 THEN realized_gain ELSE 0 END) as total_losses,
+          SUM(COALESCE(realized_gain, 0)) as net_result
+        FROM transactions
+        WHERE user_id = $1 AND type = 'SELL' AND realized_gain IS NOT NULL
+      `, [req.userId]);
+
+      return res.json({ 
+        byPeriod: result.rows,
+        totals: totals.rows[0]
+      });
+
+    } catch (error) {
+      console.error('Erro ao buscar lucros realizados:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
