@@ -1,6 +1,7 @@
 const pool = require('../config/database');
 const quotesService = require('../services/quotes.service');
 const rebalanceService = require('../services/rebalance.service');
+const macroService = require('../services/macro.service');
 
 class PortfolioController {
 
@@ -15,25 +16,15 @@ class PortfolioController {
       // Buscar renda passiva estimada
       const passiveIncome = await rebalanceService.calculatePassiveIncome(userId);
 
-      // Buscar recomendações ativas
-      const recommendationsResult = await pool.query(`
-        SELECT * FROM recommendations 
-        WHERE user_id = $1 AND is_dismissed = FALSE
-        ORDER BY 
-          CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-          created_at DESC
-        LIMIT 10
-      `, [userId]);
-
       // Buscar última atualização
       const lastUpdateResult = await pool.query(
-        'SELECT MAX(last_update) as last_update FROM assets WHERE user_id = $1',
+        'SELECT MAX(updated_at) as last_update FROM assets WHERE user_id = $1',
         [userId]
       );
 
       // Buscar histórico recente do portfolio
       const historyResult = await pool.query(`
-        SELECT date, total_value, total_invested, monthly_income
+        SELECT date, total_value, total_invested
         FROM portfolio_history 
         WHERE user_id = $1 
         ORDER BY date DESC 
@@ -52,7 +43,6 @@ class PortfolioController {
         },
         allocation: allocation.allocation,
         passiveIncome: passiveIncome.breakdown,
-        recommendations: recommendationsResult.rows,
         history: historyResult.rows.reverse()
       });
 
@@ -62,43 +52,39 @@ class PortfolioController {
     }
   }
 
-  // Atualizar tudo (botão de sincronização)
-  async syncAll(req, res) {
+  // Sincronizar cotações (syncQuotes)
+  async syncQuotes(req, res) {
     const startTime = Date.now();
     
     try {
       const userId = req.userId;
       const results = {
         quotes: { success: 0, failed: 0, details: [] },
-        rebalance: { suggestions: [] },
         snapshot: null
       };
 
       // 1. Atualizar cotações
       console.log(`[${userId}] Iniciando atualização de cotações...`);
       const quotesResult = await quotesService.updateAllQuotes(userId);
-      results.quotes.success = quotesResult.success.length;
-      results.quotes.failed = quotesResult.failed.length;
-      results.quotes.details = [...quotesResult.success.slice(0, 5), ...quotesResult.failed];
+      results.quotes.success = quotesResult.success?.length || 0;
+      results.quotes.failed = quotesResult.failed?.length || 0;
+      results.quotes.details = [
+        ...(quotesResult.success || []).slice(0, 5), 
+        ...(quotesResult.failed || [])
+      ];
 
-      // 2. Gerar sugestões de rebalanceamento
-      console.log(`[${userId}] Gerando sugestões de rebalanceamento...`);
-      results.rebalance.suggestions = await rebalanceService.generateRebalanceSuggestions(userId);
-
-      // 3. Salvar snapshot do portfolio
-      console.log(`[${userId}] Salvando snapshot do portfolio...`);
+      // 2. Salvar snapshot do portfolio
       const allocation = await rebalanceService.calculateAllocation(userId);
       const passiveIncome = await rebalanceService.calculatePassiveIncome(userId);
 
       await pool.query(`
-        INSERT INTO portfolio_history (user_id, date, total_value, total_invested, total_gain, gain_percentage, monthly_income, snapshot)
-        VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7)
+        INSERT INTO portfolio_history (user_id, date, total_value, total_invested, total_gain, gain_percentage, snapshot)
+        VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6)
         ON CONFLICT (user_id, date) DO UPDATE SET
           total_value = EXCLUDED.total_value,
           total_invested = EXCLUDED.total_invested,
           total_gain = EXCLUDED.total_gain,
           gain_percentage = EXCLUDED.gain_percentage,
-          monthly_income = EXCLUDED.monthly_income,
           snapshot = EXCLUDED.snapshot
       `, [
         userId,
@@ -106,7 +92,6 @@ class PortfolioController {
         allocation.totalInvested,
         allocation.totalGain,
         allocation.gainPercentage,
-        passiveIncome.totalMonthly,
         JSON.stringify({ allocation: allocation.allocation, income: passiveIncome })
       ]);
 
@@ -132,8 +117,8 @@ class PortfolioController {
     }
   }
 
-  // Buscar sugestões de rebalanceamento
-  async getRebalanceSuggestions(req, res) {
+  // Buscar rebalanceamento (getRebalance)
+  async getRebalance(req, res) {
     try {
       const suggestions = await rebalanceService.generateRebalanceSuggestions(req.userId);
       const allocation = await rebalanceService.calculateAllocation(req.userId);
@@ -179,27 +164,23 @@ class PortfolioController {
     try {
       const { months = 60, monthlyContribution } = req.query;
       
-      // Buscar dados atuais
       const allocation = await rebalanceService.calculateAllocation(req.userId);
       const passiveIncome = await rebalanceService.calculatePassiveIncome(req.userId);
 
-      // Buscar configuração de aporte
       const settingsResult = await pool.query(
         'SELECT monthly_contribution FROM user_settings WHERE user_id = $1',
         [req.userId]
       );
       const contribution = monthlyContribution || settingsResult.rows[0]?.monthly_contribution || 0;
 
-      // Calcular yield médio ponderado
       let weightedYield = 0;
       for (const cls of allocation.allocation) {
         if (cls.currentValue > 0 && allocation.totalValue > 0) {
           weightedYield += (cls.expectedYield * cls.currentValue / allocation.totalValue);
         }
       }
-      weightedYield = weightedYield || 10; // Default 10% se não houver dados
+      weightedYield = weightedYield || 10;
 
-      // Gerar projeção
       const projection = [];
       let currentValue = allocation.totalValue || 0;
       const monthlyReturn = Math.pow(1 + weightedYield / 100, 1/12) - 1;
@@ -282,6 +263,28 @@ class PortfolioController {
 
     } catch (error) {
       console.error('Erro ao dispensar recomendação:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+
+  // Obter análise macro
+  async getMacroAnalysis(req, res) {
+    try {
+      const analysis = await macroService.getOrCreateAnalysis(req.userId);
+      return res.json(analysis);
+    } catch (error) {
+      console.error('Erro ao buscar análise macro:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+
+  // Atualizar análise macro
+  async refreshMacroAnalysis(req, res) {
+    try {
+      const analysis = await macroService.refreshAnalysis(req.userId);
+      return res.json(analysis);
+    } catch (error) {
+      console.error('Erro ao atualizar análise macro:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
