@@ -41,18 +41,27 @@ export default function Dividends() {
       setLoading(true);
       const startDate = format(startOfMonth(subMonths(currentMonth, 11)), 'yyyy-MM-dd');
       const endDate = format(endOfMonth(currentMonth), 'yyyy-MM-dd');
+      const year = currentMonth.getFullYear();
 
       const [dividendsRes, assetsRes, summaryRes] = await Promise.all([
         dividendsService.list({ startDate, endDate }),
         assetsService.list(),
-        dividendsService.getSummary()
+        dividendsService.getSummary(year)
       ]);
 
       setDividends(dividendsRes.data?.dividends || []);
       setAssets(assetsRes.data?.assets || []);
-      setSummary(summaryRes.data?.summary || {});
-      setMonthlyData(summaryRes.data?.monthly || []);
-      setByAsset(summaryRes.data?.byAsset || []);
+
+      // Backend returns: { totalYear, thisMonth, avgMonthly, byMonth, byAsset, yieldOnCost }
+      const s = summaryRes.data || {};
+      setSummary({
+        totalReceived: s.totalYear ?? 0,
+        thisMonth: s.thisMonth ?? 0,
+        monthlyAverage: s.avgMonthly ?? 0,
+        yieldOnCost: s.yieldOnCost ?? 0,
+      });
+      setMonthlyData(s.byMonth || []);
+      setByAsset(s.byAsset || []);
     } catch (error) {
       toast.error('Erro ao carregar dividendos');
     } finally {
@@ -72,7 +81,7 @@ export default function Dividends() {
         assetId: parseInt(formData.assetId),
         type: formData.type,
         amount: parseFloat(formData.amount),
-        date: formData.date,
+        paymentDate: formData.date,
         notes: formData.notes
       });
       toast.success('Provento registrado!');
@@ -98,7 +107,7 @@ export default function Dividends() {
   const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0);
 
   const currentMonthDividends = dividends.filter(d => {
-    const date = new Date(d.date);
+    const date = new Date(d.payment_date);
     return date.getMonth() === currentMonth.getMonth() && date.getFullYear() === currentMonth.getFullYear();
   });
 
@@ -142,7 +151,7 @@ export default function Dividends() {
             <Calendar className="w-4 h-4 text-blue-400" />
             <span className="text-[10px] sm:text-xs text-blue-400">Este Mês</span>
           </div>
-          <p className="text-lg sm:text-2xl font-bold text-white">{formatCurrency(currentMonthTotal)}</p>
+          <p className="text-lg sm:text-2xl font-bold text-white">{formatCurrency(summary.thisMonth ?? currentMonthTotal)}</p>
         </div>
         <div className="stat-card bg-gradient-to-br from-amber-500/20 to-orange-500/10 border-amber-500/20">
           <div className="flex items-center gap-2 mb-1">
@@ -253,7 +262,7 @@ export default function Dividends() {
                 <div className="min-w-0">
                   <p className="font-medium text-white text-sm truncate">{div.ticker}</p>
                   <p className="text-xs text-slate-500">
-                    {format(new Date(div.date), 'dd/MM')} • {div.type === 'DIVIDEND' ? 'Div' : div.type === 'JCP' ? 'JCP' : 'Rend'}
+                    {format(new Date(div.payment_date), 'dd/MM')} • {div.type === 'DIVIDEND' ? 'Div' : div.type === 'JCP' ? 'JCP' : 'Rend'}
                   </p>
                 </div>
               </div>

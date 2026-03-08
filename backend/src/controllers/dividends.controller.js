@@ -46,7 +46,7 @@ class DividendsController {
     try {
       const userId = req.userId;
       const { year } = req.query;
-      const targetYear = parseInt(year) || new Date().getFullYear();
+      const targetYear = (year && !isNaN(parseInt(year))) ? parseInt(year) : new Date().getFullYear();
 
       const totalYearResult = await pool.query(`
         SELECT COALESCE(SUM(amount), 0) as total
