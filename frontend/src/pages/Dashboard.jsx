@@ -31,6 +31,7 @@ export default function Dashboard() {
     try {
       setLoading(true);
       const response = await portfolioService.getDashboard();
+      console.log('Dashboard data:', response.data);
       setData(response.data);
     } catch (error) {
       console.error('Erro ao carregar dashboard:', error);
@@ -43,6 +44,7 @@ export default function Dashboard() {
   const loadMacroAnalysis = async () => {
     try {
       const response = await portfolioService.getMacroAnalysis();
+      console.log('Macro analysis:', response.data);
       setMacroAnalysis(response.data);
     } catch (error) {
       console.error('Erro ao carregar análise macro:', error);
@@ -55,14 +57,24 @@ export default function Dashboard() {
 
     try {
       const response = await portfolioService.sync();
-      const results = response.data?.results || {};
-      const successCount = results.success || 0;
+      console.log('Sync response:', response.data);
+      
+      // Tratamento robusto da resposta
+      let successCount = 0;
+      if (response.data) {
+        if (response.data.results) {
+          successCount = response.data.results.success || 0;
+        } else if (response.data.success !== undefined) {
+          successCount = response.data.success ? 1 : 0;
+        }
+      }
+      
       toast.success('Sincronização concluída! ' + successCount + ' cotações atualizadas', { id: toastId });
       await loadDashboard();
     } catch (error) {
-      const msg = error.response?.data?.error || 'Erro na sincronização';
-      toast.error(msg, { id: toastId });
       console.error('Erro sync:', error);
+      const msg = error.response?.data?.error || error.message || 'Erro na sincronização';
+      toast.error(msg, { id: toastId });
     } finally {
       setSyncing(false);
     }
@@ -75,10 +87,10 @@ export default function Dashboard() {
     try {
       const response = await portfolioService.refreshMacroAnalysis();
       setMacroAnalysis(response.data);
-      toast.success('Análise atualizada com sucesso!', { id: toastId });
+      toast.success('Análise atualizada!', { id: toastId });
     } catch (error) {
+      console.error('Erro refresh macro:', error);
       toast.error('Erro ao atualizar análise', { id: toastId });
-      console.error(error);
     } finally {
       setLoadingMacro(false);
     }
@@ -87,7 +99,7 @@ export default function Dashboard() {
   const dismissSuggestion = (index) => {
     setData(prev => ({
       ...prev,
-      suggestions: (prev.suggestions || []).filter((_, i) => i !== index)
+      suggestions: (prev?.suggestions || []).filter((_, i) => i !== index)
     }));
   };
 
@@ -110,9 +122,13 @@ export default function Dashboard() {
     );
   }
 
-  const { summary, allocation, suggestions, history } = data || {};
+  const summary = data?.summary || {};
+  const allocation = data?.allocation || [];
+  const suggestions = data?.suggestions || [];
+  const history = data?.history || [];
 
-  const recommendations = (suggestions || []).map((s, i) => ({
+  // Converter suggestions para formato de exibição
+  const recommendations = suggestions.map((s, i) => ({
     id: i,
     type: s.type === 'INCREASE' ? 'BUY' : s.type === 'REDUCE' ? 'SELL' : 'INFO',
     title: s.type === 'INCREASE' ? 'Aumente ' + s.className : 'Reduza ' + s.className,
@@ -122,9 +138,10 @@ export default function Dashboard() {
     difference: s.difference
   }));
 
+  // Preparar dados para gráfico de alocação sugerida vs atual
   const allocationComparison = macroAnalysis?.suggestedAllocation 
     ? Object.entries(macroAnalysis.suggestedAllocation).map(([name, suggested]) => {
-        const current = allocation?.find(a => a.name.toLowerCase().includes(name.toLowerCase().split(' ')[0]));
+        const current = allocation.find(a => a.name && a.name.toLowerCase().includes(name.toLowerCase().split(' ')[0]));
         return {
           name: name.length > 12 ? name.substring(0, 12) + '...' : name,
           sugerido: suggested,
@@ -142,7 +159,7 @@ export default function Dashboard() {
             Olá, {user?.name?.split(' ')[0]}! 👋
           </h1>
           <p className="text-slate-500 text-sm mt-1">
-            {summary?.lastUpdate ? (
+            {summary.lastUpdate ? (
               <>Última atualização: {formatDistanceToNow(new Date(summary.lastUpdate), { addSuffix: true, locale: ptBR })}</>
             ) : (
               'Clique em sincronizar para atualizar as cotações'
@@ -160,18 +177,18 @@ export default function Dashboard() {
         <div className="stat-card bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border-emerald-500/20">
           <div className="flex items-center justify-between mb-2">
             <DollarSign className="w-5 h-5 text-emerald-400" />
-            {(summary?.totalGain || 0) >= 0 ? <ArrowUpRight className="w-4 h-4 text-emerald-400" /> : <ArrowDownRight className="w-4 h-4 text-red-400" />}
+            {(summary.totalGain || 0) >= 0 ? <ArrowUpRight className="w-4 h-4 text-emerald-400" /> : <ArrowDownRight className="w-4 h-4 text-red-400" />}
           </div>
-          <p className="text-2xl font-bold text-white">{formatCurrency(summary?.totalValue)}</p>
+          <p className="text-2xl font-bold text-white">{formatCurrency(summary.totalValue)}</p>
           <p className="text-xs text-slate-400 mt-1">Patrimônio Total</p>
         </div>
 
-        <div className={'stat-card ' + ((summary?.totalGain || 0) >= 0 ? 'bg-gradient-to-br from-green-500/20 to-emerald-500/10 border-green-500/20' : 'bg-gradient-to-br from-red-500/20 to-rose-500/10 border-red-500/20')}>
+        <div className={'stat-card ' + ((summary.totalGain || 0) >= 0 ? 'bg-gradient-to-br from-green-500/20 to-emerald-500/10 border-green-500/20' : 'bg-gradient-to-br from-red-500/20 to-rose-500/10 border-red-500/20')}>
           <div className="flex items-center justify-between mb-2">
-            {(summary?.totalGain || 0) >= 0 ? <TrendingUp className="w-5 h-5 text-green-400" /> : <TrendingDown className="w-5 h-5 text-red-400" />}
-            <span className={'text-xs font-medium ' + ((summary?.totalGain || 0) >= 0 ? 'text-green-400' : 'text-red-400')}>{formatPercent(summary?.gainPercentage)}</span>
+            {(summary.totalGain || 0) >= 0 ? <TrendingUp className="w-5 h-5 text-green-400" /> : <TrendingDown className="w-5 h-5 text-red-400" />}
+            <span className={'text-xs font-medium ' + ((summary.totalGain || 0) >= 0 ? 'text-green-400' : 'text-red-400')}>{formatPercent(summary.gainPercentage)}</span>
           </div>
-          <p className={'text-2xl font-bold ' + ((summary?.totalGain || 0) >= 0 ? 'text-green-400' : 'text-red-400')}>{formatCurrency(summary?.totalGain)}</p>
+          <p className={'text-2xl font-bold ' + ((summary.totalGain || 0) >= 0 ? 'text-green-400' : 'text-red-400')}>{formatCurrency(summary.totalGain)}</p>
           <p className="text-xs text-slate-400 mt-1">Ganho/Perda Total</p>
         </div>
 
@@ -180,7 +197,7 @@ export default function Dashboard() {
             <DollarSign className="w-5 h-5 text-amber-400" />
             <span className="text-xs text-amber-400">mensal</span>
           </div>
-          <p className="text-2xl font-bold text-amber-400">{formatCurrency(summary?.monthlyIncome)}</p>
+          <p className="text-2xl font-bold text-amber-400">{formatCurrency(summary.monthlyIncome)}</p>
           <p className="text-xs text-slate-400 mt-1">Renda Passiva</p>
         </div>
 
@@ -189,7 +206,7 @@ export default function Dashboard() {
             <Clock className="w-5 h-5 text-blue-400" />
             <span className="text-xs text-blue-400">anual</span>
           </div>
-          <p className="text-2xl font-bold text-blue-400">{formatCurrency(summary?.annualIncome)}</p>
+          <p className="text-2xl font-bold text-blue-400">{formatCurrency(summary.annualIncome)}</p>
           <p className="text-xs text-slate-400 mt-1">Renda Anual Est.</p>
         </div>
       </div>
@@ -198,7 +215,7 @@ export default function Dashboard() {
         {/* Allocation Chart */}
         <div className="card p-5">
           <h3 className="font-semibold text-white mb-4">Alocação Atual</h3>
-          {allocation && allocation.length > 0 && allocation.some(a => a.currentValue > 0) ? (
+          {allocation.length > 0 && allocation.some(a => a.currentValue > 0) ? (
             <div className="flex items-center gap-4">
               <div className="w-48 h-48">
                 <ResponsiveContainer width="100%" height="100%">
@@ -248,7 +265,7 @@ export default function Dashboard() {
             <Target className="w-5 h-5 text-emerald-400" />
             Recomendações de Rebalanceamento
           </h3>
-          {recommendations && recommendations.length > 0 ? (
+          {recommendations.length > 0 ? (
             <div className="space-y-3 max-h-64 overflow-y-auto">
               {recommendations.map((rec, index) => (
                 <div key={index} className={'p-3 rounded-xl flex items-start gap-3 ' + (rec.type === 'BUY' ? 'bg-emerald-500/10 border border-emerald-500/20' : rec.type === 'SELL' ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-blue-500/10 border border-blue-500/20')}>
@@ -285,6 +302,7 @@ export default function Dashboard() {
 
         {macroAnalysis ? (
           <div className="space-y-6">
+            {/* Summary */}
             {macroAnalysis.summary && (
               <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/20 rounded-xl p-4">
                 <p className="text-slate-300 text-sm leading-relaxed">{macroAnalysis.summary}</p>
@@ -297,6 +315,7 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* Scenarios */}
             {macroAnalysis.scenarios && macroAnalysis.scenarios.length > 0 && (
               <div>
                 <h4 className="text-sm font-medium text-slate-400 mb-3">Cenários Identificados</h4>
@@ -309,7 +328,7 @@ export default function Dashboard() {
                       </div>
                       <p className="text-xs text-slate-400 mb-3">{scenario.description}</p>
                       <div className="flex flex-wrap gap-1">
-                        {scenario.benefitedAssets?.map((asset, j) => (
+                        {(scenario.benefitedAssets || []).map((asset, j) => (
                           <span key={j} className="text-xs bg-slate-700/50 text-slate-300 px-2 py-0.5 rounded">{asset}</span>
                         ))}
                       </div>
@@ -319,6 +338,7 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* Suggested Allocation Chart */}
             {allocationComparison.length > 0 && (
               <div>
                 <h4 className="text-sm font-medium text-slate-400 mb-3 flex items-center gap-2">
@@ -336,7 +356,7 @@ export default function Dashboard() {
                             <div className="bg-slate-800 border border-slate-600 p-2 rounded-lg shadow-xl text-xs">
                               <p className="text-white font-medium mb-1">{payload[0]?.payload?.name}</p>
                               <p className="text-purple-400">Sugerido: {payload[0]?.value}%</p>
-                              <p className="text-emerald-400">Atual: {payload[1]?.value?.toFixed(1)}%</p>
+                              <p className="text-emerald-400">Atual: {(payload[1]?.value || 0).toFixed(1)}%</p>
                             </div>
                           );
                         }
@@ -369,7 +389,7 @@ export default function Dashboard() {
       </div>
 
       {/* History Chart */}
-      {history && history.length > 0 && (
+      {history.length > 0 && (
         <div className="card p-5">
           <h3 className="font-semibold text-white mb-4">Evolução do Patrimônio</h3>
           <div className="h-64">
@@ -381,13 +401,13 @@ export default function Dashboard() {
                     <stop offset="95%" stopColor="#10B981" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <XAxis dataKey="date" stroke="#475569" tick={{ fill: '#64748B', fontSize: 12 }} tickFormatter={(v) => { try { return format(new Date(v), 'dd/MM'); } catch { return v; } }} />
+                <XAxis dataKey="date" stroke="#475569" tick={{ fill: '#64748B', fontSize: 12 }} tickFormatter={(v) => { try { return format(new Date(v), 'dd/MM'); } catch(e) { return v; } }} />
                 <YAxis stroke="#475569" tick={{ fill: '#64748B', fontSize: 12 }} tickFormatter={(v) => (v / 1000).toFixed(0) + 'k'} />
                 <Tooltip content={({ active, payload, label }) => {
                   if (active && payload && payload.length) {
                     return (
                       <div className="bg-slate-800 border border-slate-600 p-3 rounded-lg shadow-xl">
-                        <p className="text-slate-400 text-xs mb-1">{(() => { try { return format(new Date(label), 'dd/MM/yyyy'); } catch { return label; } })()}</p>
+                        <p className="text-slate-400 text-xs mb-1">{(() => { try { return format(new Date(label), 'dd/MM/yyyy'); } catch(e) { return label; } })()}</p>
                         <p className="text-emerald-400 font-mono">{formatCurrency(payload[0].value)}</p>
                       </div>
                     );
