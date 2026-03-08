@@ -13,7 +13,6 @@ class SettingsController {
 
       const data = { ...settings.rows[0] };
       
-      // Mascarar tokens
       if (data.brapi_token) {
         data.brapi_token_masked = '••••' + data.brapi_token.slice(-4);
       }
@@ -27,7 +26,7 @@ class SettingsController {
       return res.json({ settings: data });
     } catch (error) {
       console.error('Erro ao buscar configurações:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
     }
   }
 
@@ -56,38 +55,56 @@ class SettingsController {
           investmentHorizon || 10, 
           riskProfile || 'moderate', 
           monthlyContribution || 0, 
-          brapiToken, 
-          alphavantageKey, 
-          groqApiKey
+          brapiToken || null, 
+          alphavantageKey || null, 
+          groqApiKey || null
         ]);
       } else {
-        await pool.query(`
-          UPDATE user_settings SET
-            rebalance_threshold = COALESCE($1, rebalance_threshold),
-            investment_horizon = COALESCE($2, investment_horizon),
-            risk_profile = COALESCE($3, risk_profile),
-            monthly_contribution = COALESCE($4, monthly_contribution),
-            brapi_token = COALESCE($5, brapi_token),
-            alphavantage_key = COALESCE($6, alphavantage_key),
-            groq_api_key = COALESCE($7, groq_api_key),
-            updated_at = NOW()
-          WHERE user_id = $8
-        `, [
-          rebalanceThreshold, 
-          investmentHorizon, 
-          riskProfile, 
-          monthlyContribution, 
-          brapiToken, 
-          alphavantageKey, 
-          groqApiKey, 
-          req.userId
-        ]);
+        // Update apenas os campos que foram enviados
+        const updates = [];
+        const values = [];
+        let paramIndex = 1;
+
+        if (rebalanceThreshold !== undefined) {
+          updates.push(`rebalance_threshold = $${paramIndex++}`);
+          values.push(rebalanceThreshold);
+        }
+        if (investmentHorizon !== undefined) {
+          updates.push(`investment_horizon = $${paramIndex++}`);
+          values.push(investmentHorizon);
+        }
+        if (riskProfile !== undefined) {
+          updates.push(`risk_profile = $${paramIndex++}`);
+          values.push(riskProfile);
+        }
+        if (monthlyContribution !== undefined) {
+          updates.push(`monthly_contribution = $${paramIndex++}`);
+          values.push(monthlyContribution);
+        }
+        if (brapiToken !== undefined) {
+          updates.push(`brapi_token = $${paramIndex++}`);
+          values.push(brapiToken || null);
+        }
+        if (alphavantageKey !== undefined) {
+          updates.push(`alphavantage_key = $${paramIndex++}`);
+          values.push(alphavantageKey || null);
+        }
+        if (groqApiKey !== undefined) {
+          updates.push(`groq_api_key = $${paramIndex++}`);
+          values.push(groqApiKey || null);
+        }
+
+        updates.push('updated_at = NOW()');
+        values.push(req.userId);
+
+        const query = `UPDATE user_settings SET ${updates.join(', ')} WHERE user_id = $${paramIndex}`;
+        await pool.query(query, values);
       }
 
       return res.json({ message: 'Configurações atualizadas com sucesso' });
     } catch (error) {
       console.error('Erro ao atualizar configurações:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      return res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
     }
   }
 
@@ -146,7 +163,6 @@ class SettingsController {
       } 
       else if (api === 'groq') {
         try {
-          // Usar modelo atualizado
           const response = await axios.post(
             'https://api.groq.com/openai/v1/chat/completions',
             {
@@ -160,61 +176,149 @@ class SettingsController {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
               },
-              timeout: 20000
+              timeout: 15000
             }
           );
           
           if (response.data?.choices?.[0]?.message) {
-            result = { success: true, message: 'Conexão com Groq OK!' };
+            result = { success: true, message: 'Conexão OK! API Groq funcionando' };
           } else {
-            result = { success: false, message: 'Resposta inesperada do Groq' };
+            result = { success: false, message: 'Resposta inválida' };
           }
         } catch (e) {
-          const errorMsg = e.response?.data?.error?.message || e.message;
-          result = { success: false, message: `Erro Groq: ${errorMsg}` };
+          const msg = e.response?.data?.error?.message || e.message;
+          result = { success: false, message: `Erro Groq: ${msg}` };
         }
       }
 
       return res.json(result);
     } catch (error) {
       console.error('Erro ao testar API:', error);
-      return res.status(500).json({ success: false, message: error.message });
+      return res.status(500).json({ success: false, message: 'Erro interno' });
     }
   }
 
   async exportData(req, res) {
     try {
+      const userId = req.userId;
+
       const [classes, assets, transactions, dividends, goals, settings] = await Promise.all([
-        pool.query('SELECT * FROM asset_classes WHERE user_id = $1', [req.userId]),
-        pool.query('SELECT * FROM assets WHERE user_id = $1', [req.userId]),
-        pool.query('SELECT * FROM transactions WHERE user_id = $1', [req.userId]),
-        pool.query('SELECT * FROM dividends WHERE user_id = $1', [req.userId]),
-        pool.query('SELECT * FROM goals WHERE user_id = $1', [req.userId]),
-        pool.query('SELECT rebalance_threshold, investment_horizon, risk_profile, monthly_contribution FROM user_settings WHERE user_id = $1', [req.userId])
+        pool.query('SELECT * FROM asset_classes WHERE user_id = $1', [userId]),
+        pool.query('SELECT * FROM assets WHERE user_id = $1', [userId]),
+        pool.query('SELECT * FROM transactions WHERE user_id = $1', [userId]),
+        pool.query('SELECT * FROM dividends WHERE user_id = $1', [userId]),
+        pool.query('SELECT * FROM goals WHERE user_id = $1', [userId]),
+        pool.query('SELECT * FROM user_settings WHERE user_id = $1', [userId])
       ]);
 
-      return res.json({
+      const exportData = {
         exportDate: new Date().toISOString(),
-        version: '2.0',
-        classes: classes.rows,
-        assets: assets.rows,
-        transactions: transactions.rows,
-        dividends: dividends.rows,
-        goals: goals.rows,
-        settings: settings.rows[0] || {}
-      });
+        version: '1.0',
+        data: {
+          classes: classes.rows,
+          assets: assets.rows,
+          transactions: transactions.rows,
+          dividends: dividends.rows,
+          goals: goals.rows,
+          settings: settings.rows[0] || {}
+        }
+      };
+
+      return res.json(exportData);
     } catch (error) {
-      console.error('Erro ao exportar dados:', error);
-      return res.status(500).json({ error: 'Erro interno do servidor' });
+      console.error('Erro ao exportar:', error);
+      return res.status(500).json({ error: 'Erro ao exportar dados' });
     }
   }
 
   async importData(req, res) {
+    const client = await pool.connect();
+    
     try {
-      return res.json({ message: 'Importação não implementada' });
+      const userId = req.userId;
+      const { data, merge } = req.body;
+
+      if (!data || !data.data) {
+        return res.status(400).json({ error: 'Formato de dados inválido' });
+      }
+
+      await client.query('BEGIN');
+
+      if (!merge) {
+        await client.query('DELETE FROM dividends WHERE user_id = $1', [userId]);
+        await client.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
+        await client.query('DELETE FROM assets WHERE user_id = $1', [userId]);
+        await client.query('DELETE FROM asset_classes WHERE user_id = $1', [userId]);
+        await client.query('DELETE FROM goals WHERE user_id = $1', [userId]);
+      }
+
+      const classIdMap = {};
+      
+      for (const cls of data.data.classes || []) {
+        const result = await client.query(`
+          INSERT INTO asset_classes (user_id, name, target_percentage, color, icon, category, description, expected_yield)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (user_id, name) DO UPDATE SET
+            target_percentage = EXCLUDED.target_percentage,
+            color = EXCLUDED.color
+          RETURNING id
+        `, [userId, cls.name, cls.target_percentage, cls.color, cls.icon, cls.category, cls.description, cls.expected_yield]);
+        classIdMap[cls.id] = result.rows[0].id;
+      }
+
+      const assetIdMap = {};
+      
+      for (const asset of data.data.assets || []) {
+        const newClassId = classIdMap[asset.asset_class_id];
+        if (!newClassId) continue;
+        
+        const result = await client.query(`
+          INSERT INTO assets (user_id, asset_class_id, ticker, name, type, market, quantity, average_price, current_price, notes)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ON CONFLICT (user_id, ticker) DO UPDATE SET
+            quantity = EXCLUDED.quantity,
+            average_price = EXCLUDED.average_price,
+            current_price = EXCLUDED.current_price
+          RETURNING id
+        `, [userId, newClassId, asset.ticker, asset.name, asset.type, asset.market, asset.quantity, asset.average_price, asset.current_price, asset.notes]);
+        assetIdMap[asset.id] = result.rows[0].id;
+      }
+
+      for (const tx of data.data.transactions || []) {
+        const newAssetId = assetIdMap[tx.asset_id];
+        if (!newAssetId) continue;
+        
+        await client.query(`
+          INSERT INTO transactions (user_id, asset_id, type, quantity, price, total, date, notes)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [userId, newAssetId, tx.type, tx.quantity, tx.price, tx.total, tx.date, tx.notes]);
+      }
+
+      for (const div of data.data.dividends || []) {
+        const newAssetId = assetIdMap[div.asset_id];
+        if (!newAssetId) continue;
+        
+        await client.query(`
+          INSERT INTO dividends (user_id, asset_id, type, amount, payment_date, ex_date, notes)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, [userId, newAssetId, div.type, div.amount, div.payment_date, div.ex_date, div.notes]);
+      }
+
+      for (const goal of data.data.goals || []) {
+        await client.query(`
+          INSERT INTO goals (user_id, name, target_value, target_date, monthly_contribution, expected_yield, color, is_completed)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [userId, goal.name, goal.target_value, goal.target_date, goal.monthly_contribution, goal.expected_yield, goal.color, goal.is_completed]);
+      }
+
+      await client.query('COMMIT');
+      return res.json({ message: 'Dados importados com sucesso' });
     } catch (error) {
-      console.error('Erro ao importar dados:', error);
+      await client.query('ROLLBACK');
+      console.error('Erro ao importar:', error);
       return res.status(500).json({ error: 'Erro ao importar dados' });
+    } finally {
+      client.release();
     }
   }
 }

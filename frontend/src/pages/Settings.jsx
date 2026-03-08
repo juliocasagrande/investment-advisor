@@ -57,13 +57,13 @@ export default function Settings() {
     setSaving(true);
     try {
       await settingsService.update({
-        rebalanceThreshold: parseFloat(settings.rebalance_threshold),
-        investmentHorizon: parseInt(settings.investment_horizon),
-        riskProfile: settings.risk_profile,
-        monthlyContribution: parseFloat(settings.monthly_contribution),
-        brapiToken: settings.brapi_token,
-        alphavantageKey: settings.alphavantage_key,
-        grokApiKey: settings.groq_api_key
+        rebalanceThreshold: parseFloat(settings.rebalance_threshold) || 5,
+        investmentHorizon: parseInt(settings.investment_horizon) || 10,
+        riskProfile: settings.risk_profile || 'moderate',
+        monthlyContribution: parseFloat(settings.monthly_contribution) || 0,
+        brapiToken: settings.brapi_token || null,
+        alphavantageKey: settings.alphavantage_key || null,
+        groqApiKey: settings.groq_api_key || null
       });
       toast.success('Configurações salvas!');
     } catch (error) {
