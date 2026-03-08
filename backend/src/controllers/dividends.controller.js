@@ -7,10 +7,14 @@ class DividendsController {
       const { startDate, endDate, assetId } = req.query;
       
       let query = `
-        SELECT d.*, a.ticker, a.name as asset_name, ac.name as class_name, ac.color
+        SELECT d.*, 
+               COALESCE(a.ticker, 'N/A') as ticker, 
+               COALESCE(a.name, 'Ativo removido') as asset_name, 
+               COALESCE(ac.name, 'Sem classe') as class_name, 
+               COALESCE(ac.color, '#6b7280') as color
         FROM dividends d
-        JOIN assets a ON d.asset_id = a.id
-        JOIN asset_classes ac ON a.asset_class_id = ac.id
+        LEFT JOIN assets a ON d.asset_id = a.id
+        LEFT JOIN asset_classes ac ON a.asset_class_id = ac.id
         WHERE d.user_id = $1
       `;
       const params = [userId];
@@ -44,14 +48,12 @@ class DividendsController {
       const { year } = req.query;
       const targetYear = parseInt(year) || new Date().getFullYear();
 
-      // Total do ano
       const totalYearResult = await pool.query(`
         SELECT COALESCE(SUM(amount), 0) as total
         FROM dividends 
         WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
       `, [userId, targetYear]);
 
-      // Este mês
       const thisMonthResult = await pool.query(`
         SELECT COALESCE(SUM(amount), 0) as total
         FROM dividends 
@@ -60,38 +62,38 @@ class DividendsController {
         AND EXTRACT(MONTH FROM payment_date) = EXTRACT(MONTH FROM CURRENT_DATE)
       `, [userId]);
 
-      // Por mês
       const byMonthResult = await pool.query(`
         SELECT TO_CHAR(payment_date, 'YYYY-MM') as month, 
                TO_CHAR(payment_date, 'Mon') as month_name,
-               SUM(amount) as total
+               COALESCE(SUM(amount), 0) as total
         FROM dividends 
         WHERE user_id = $1 AND EXTRACT(YEAR FROM payment_date) = $2
         GROUP BY TO_CHAR(payment_date, 'YYYY-MM'), TO_CHAR(payment_date, 'Mon')
         ORDER BY month
       `, [userId, targetYear]);
 
-      // Por ativo
       const byAssetResult = await pool.query(`
-        SELECT a.ticker, a.name, ac.color, SUM(d.amount) as total
+        SELECT COALESCE(a.ticker, 'N/A') as ticker, 
+               COALESCE(a.name, 'Ativo') as name, 
+               COALESCE(ac.color, '#6b7280') as color, 
+               COALESCE(SUM(d.amount), 0) as total
         FROM dividends d 
-        JOIN assets a ON d.asset_id = a.id
-        JOIN asset_classes ac ON a.asset_class_id = ac.id
+        LEFT JOIN assets a ON d.asset_id = a.id
+        LEFT JOIN asset_classes ac ON a.asset_class_id = ac.id
         WHERE d.user_id = $1 AND EXTRACT(YEAR FROM d.payment_date) = $2
         GROUP BY a.id, a.ticker, a.name, ac.color
         ORDER BY total DESC
       `, [userId, targetYear]);
 
-      // Total investido (para yield on cost)
       const totalInvestedResult = await pool.query(`
         SELECT COALESCE(SUM(quantity * average_price), 0) as total 
         FROM assets 
-        WHERE user_id = $1
+        WHERE user_id = $1 AND quantity > 0
       `, [userId]);
 
-      const totalYear = parseFloat(totalYearResult.rows[0].total);
-      const thisMonth = parseFloat(thisMonthResult.rows[0].total);
-      const invested = parseFloat(totalInvestedResult.rows[0].total);
+      const totalYear = parseFloat(totalYearResult.rows[0]?.total || 0);
+      const thisMonth = parseFloat(thisMonthResult.rows[0]?.total || 0);
+      const invested = parseFloat(totalInvestedResult.rows[0]?.total || 0);
       const yieldOnCost = invested > 0 ? (totalYear / invested) * 100 : 0;
 
       return res.json({
@@ -117,7 +119,6 @@ class DividendsController {
         return res.status(400).json({ error: 'Campos obrigatórios: assetId, amount, paymentDate' });
       }
 
-      // Verificar se o ativo pertence ao usuário
       const assetCheck = await pool.query(
         'SELECT id FROM assets WHERE id = $1 AND user_id = $2',
         [assetId, userId]
