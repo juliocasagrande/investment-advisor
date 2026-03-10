@@ -645,3 +645,7 @@ class AssetsController {
   }
 
 
+
+}
+
+module.exports = new AssetsController();
