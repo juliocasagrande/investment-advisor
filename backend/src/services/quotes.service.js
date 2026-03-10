@@ -126,12 +126,16 @@ class QuotesService {
     }
   }
 
+  // Alias para compatibilidade com portfolio.controller.js
+  async getBRQuote(ticker, token) {
+    return this.getBrazilianQuote(ticker, token);
+  }
+
   // Atualizar todas as cotações de um usuário
   async updateAllQuotes(userId) {
     const client = await pool.connect();
     
     try {
-      // Buscar configurações do usuário
       const settingsResult = await client.query(
         'SELECT brapi_token, alphavantage_key FROM user_settings WHERE user_id = $1',
         [userId]
@@ -141,9 +145,8 @@ class QuotesService {
       const brapiToken = settings.brapi_token || process.env.BRAPI_TOKEN;
       const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
 
-      // Buscar todos os ativos do usuário
       const assetsResult = await client.query(
-        'SELECT id, ticker, market FROM assets WHERE user_id = $1',
+        'SELECT id, ticker, market FROM assets WHERE user_id = $1 AND quantity > 0',
         [userId]
       );
 
@@ -155,24 +158,19 @@ class QuotesService {
           const quote = await this.getQuote(asset.ticker, asset.market, brapiToken, alphaKey);
           
           if (quote && quote.price) {
+            // Usar apenas colunas que existem com certeza
             await client.query(`
               UPDATE assets SET 
                 current_price = $1,
-                dividend_yield = $2,
-                last_update = NOW(),
                 updated_at = NOW()
-              WHERE id = $3
-            `, [quote.price, quote.dividendYield || null, asset.id]);
-
-            // Atualizar cache
-            await this.updateCache(asset.ticker, asset.market, quote);
+              WHERE id = $2
+            `, [quote.price, asset.id]);
 
             results.success.push({ ticker: asset.ticker, price: quote.price });
           } else {
             results.failed.push({ ticker: asset.ticker, reason: 'Sem dados' });
           }
 
-          // Rate limiting - esperar entre requisições
           await this.delay(300);
           
         } catch (error) {
@@ -184,37 +182,6 @@ class QuotesService {
       
     } finally {
       client.release();
-    }
-  }
-
-  // Atualizar cache de cotações
-  async updateCache(ticker, market, quote) {
-    try {
-      await pool.query(`
-        INSERT INTO quotes_cache (ticker, market, price, change_percent, dividend_yield, data, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
-        ON CONFLICT (ticker) DO UPDATE SET
-          price = EXCLUDED.price,
-          change_percent = EXCLUDED.change_percent,
-          dividend_yield = EXCLUDED.dividend_yield,
-          data = EXCLUDED.data,
-          updated_at = NOW()
-      `, [ticker, market, quote.price, quote.changePercent, quote.dividendYield, JSON.stringify(quote.raw || quote)]);
-    } catch (error) {
-      console.error(`Erro ao atualizar cache ${ticker}:`, error.message);
-    }
-  }
-
-  // Buscar cotação do cache
-  async getFromCache(ticker) {
-    try {
-      const result = await pool.query(
-        'SELECT * FROM quotes_cache WHERE ticker = $1 AND updated_at > NOW() - INTERVAL \'1 hour\'',
-        [ticker]
-      );
-      return result.rows[0] || null;
-    } catch (error) {
-      return null;
     }
   }
 

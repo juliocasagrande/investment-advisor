@@ -577,6 +577,71 @@ class AssetsController {
       return res.status(500).json({ error: 'Erro interno do servidor' });
     }
   }
-}
+  // Deletar transação
+  async deleteTransaction(req, res) {
+    const client = await pool.connect();
+    try {
+      const { id } = req.params;
 
-module.exports = new AssetsController();
+      // Buscar a transação antes de deletar para reverter o ativo
+      const txResult = await client.query(
+        'SELECT * FROM transactions WHERE id = $1 AND user_id = $2',
+        [id, req.userId]
+      );
+
+      if (txResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Transação não encontrada' });
+      }
+
+      const tx = txResult.rows[0];
+
+      await client.query('BEGIN');
+
+      // Reverter efeito no ativo
+      const assetResult = await client.query(
+        'SELECT * FROM assets WHERE id = $1',
+        [tx.asset_id]
+      );
+
+      if (assetResult.rows.length > 0) {
+        const asset = assetResult.rows[0];
+        let newQuantity = parseFloat(asset.quantity);
+        let newAvgPrice = parseFloat(asset.average_price);
+        const txQty = parseFloat(tx.quantity);
+        const txPrice = parseFloat(tx.price);
+
+        if (tx.type === 'BUY') {
+          // Reverter compra: remover da posição
+          const totalBefore = newQuantity * newAvgPrice;
+          const totalTx = txQty * txPrice;
+          newQuantity = Math.max(0, newQuantity - txQty);
+          newAvgPrice = newQuantity > 0 ? Math.max(0, (totalBefore - totalTx) / newQuantity) : 0;
+        } else if (tx.type === 'SELL') {
+          // Reverter venda: devolver à posição com PM original
+          const avgCostAtSale = tx.average_cost_at_sale ? parseFloat(tx.average_cost_at_sale) : newAvgPrice;
+          const totalBefore = newQuantity * newAvgPrice;
+          const totalReturned = txQty * avgCostAtSale;
+          newQuantity += txQty;
+          newAvgPrice = newQuantity > 0 ? (totalBefore + totalReturned) / newQuantity : 0;
+        }
+
+        await client.query(
+          'UPDATE assets SET quantity = $1, average_price = $2, updated_at = NOW() WHERE id = $3',
+          [newQuantity, newAvgPrice, tx.asset_id]
+        );
+      }
+
+      await client.query('DELETE FROM transactions WHERE id = $1', [id]);
+      await client.query('COMMIT');
+
+      return res.json({ message: 'Transação excluída com sucesso' });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Erro ao deletar transação:', error);
+      return res.status(500).json({ error: 'Erro interno do servidor' });
+    } finally {
+      client.release();
+    }
+  }
+
+

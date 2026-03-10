@@ -175,6 +175,20 @@ async function migrate() {
       )
     `);
 
+    // Tabela de cache de cotações
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS quotes_cache (
+        id SERIAL PRIMARY KEY,
+        ticker VARCHAR(20) UNIQUE NOT NULL,
+        market VARCHAR(10),
+        price DECIMAL(20,8),
+        change_percent DECIMAL(10,4),
+        dividend_yield DECIMAL(10,4),
+        data JSONB,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
     // Migrações incrementais - adicionar colunas se não existirem
     console.log('📦 Verificando colunas adicionais...');
 
@@ -205,7 +219,11 @@ async function migrate() {
       "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS realized_gain_percent DECIMAL(10,4)",
       
       // portfolio_history
-      "ALTER TABLE portfolio_history ADD COLUMN IF NOT EXISTS realized_gains DECIMAL(20,2)"
+      "ALTER TABLE portfolio_history ADD COLUMN IF NOT EXISTS realized_gains DECIMAL(20,2)",
+
+      // assets - colunas de cotação que faltavam
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dividend_yield DECIMAL(10,4)",
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_update TIMESTAMP"
     ];
 
     for (const sql of alterations) {

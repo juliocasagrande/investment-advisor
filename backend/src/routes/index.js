@@ -28,9 +28,9 @@ router.post('/assets/update-quotes', auth, (req, res) => portfolioController.syn
 
 // ==================== TRANSACTIONS ====================
 router.get('/transactions', auth, (req, res) => assetsController.listTransactions(req, res));
+router.get('/transactions/realized-gains', auth, (req, res) => assetsController.getRealizedGains(req, res));
 router.post('/transactions', auth, (req, res) => assetsController.createTransaction(req, res));
 router.delete('/transactions/:id', auth, (req, res) => assetsController.deleteTransaction(req, res));
-router.get('/transactions/realized-gains', auth, (req, res) => assetsController.getRealizedGains(req, res));
 
 // ==================== CLASSES ====================
 router.get('/classes', auth, (req, res) => assetsController.listClasses(req, res));
