@@ -105,9 +105,9 @@ export const settingsService = {
 };
 
 export const screenerService = {
-  search: (tickers, filters) => api.post('/screener/search', { tickers, filters }),
+  search: (filters, assetClass = 'stocks') => api.post('/screener/search', { filters, assetClass }),
   analyzePositions: (filters) => api.post('/screener/analyze', { filters }),
-  getSuggestions: (classId, filters) => api.post('/screener/suggestions', { classId, filters }),
+  getSuggestions: (ticker, filters) => api.post('/screener/suggestions', { ticker, filters }),
   getFundamentals: (ticker) => api.get(`/screener/fundamentals/${ticker}`),
   saveFilters: (name, filters) => api.post('/screener/filters', { name, filters }),
   listFilters: () => api.get('/screener/filters'),

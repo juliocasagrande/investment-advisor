@@ -1,6 +1,39 @@
 const pool = require('../config/database');
 const axios = require('axios');
 
+// Garante que todas as colunas necessárias existem (auto-healing)
+async function ensureColumns() {
+  const alterations = [
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS groq_api_key TEXT",
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS brapi_token TEXT",
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS alphavantage_key TEXT",
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS rebalance_threshold DECIMAL(5,2) DEFAULT 5",
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS investment_horizon INTEGER DEFAULT 10",
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS risk_profile VARCHAR(50) DEFAULT 'moderate'",
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS monthly_contribution DECIMAL(15,2) DEFAULT 0",
+    "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+    "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dividend_yield DECIMAL(10,4)",
+    "ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_update TIMESTAMP",
+    `CREATE TABLE IF NOT EXISTS quotes_cache (
+      id SERIAL PRIMARY KEY,
+      ticker VARCHAR(20) UNIQUE NOT NULL,
+      market VARCHAR(10),
+      price DECIMAL(20,8),
+      change_percent DECIMAL(10,4),
+      dividend_yield DECIMAL(10,4),
+      data JSONB,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`
+  ];
+  for (const sql of alterations) {
+    try { await pool.query(sql); } catch (e) { /* ignora */ }
+  }
+}
+
+// Executa ao inicializar o módulo — corrige o banco automaticamente
+ensureColumns().catch(e => console.error('ensureColumns error:', e.message));
+
+
 class SettingsController {
   async getSettings(req, res) {
     try {

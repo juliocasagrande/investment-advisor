@@ -345,18 +345,8 @@ export default function Screener() {
       setLoading(true);
       setResults([]);
       setAiAnalysis(null);
-      const response = await screenerService.search(null, filters, assetClass);
-      // API call passes assetClass via body — need to call directly
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001/api'}/screener/search`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({ filters, assetClass })
-      });
-      const data = await res.json();
-      if (!res.ok) { toast.error(data.error || 'Erro ao buscar'); return; }
+      const response = await screenerService.search(filters, assetClass);
+      const data = response.data;
       setResults(data.stocks || []);
       if (data.aiAnalysis) setAiAnalysis(data.aiAnalysis);
       toast.success(`${data.passed || 0} ativo(s) passaram nos filtros`);
@@ -371,7 +361,7 @@ export default function Screener() {
     try {
       setLoadingSuggestions(true);
       setSelectedStock(ticker);
-      const response = await screenerService.getSuggestions(null, filters);
+      const response = await screenerService.getSuggestions(ticker, filters);
       setSuggestions(response.data);
     } catch (error) {
       toast.error('Erro ao buscar sugestões');
