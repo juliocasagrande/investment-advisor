@@ -56,7 +56,6 @@ export const assetsService = {
 export const transactionsService = {
   list: (params) => api.get('/transactions', { params }),
   create: (data) => api.post('/transactions', data),
-  update: (id, data) => api.put(`/transactions/${id}`, data),
   delete: (id) => api.delete(`/transactions/${id}`),
   getRealizedGains: (params) => api.get('/transactions/realized-gains', { params })
 };

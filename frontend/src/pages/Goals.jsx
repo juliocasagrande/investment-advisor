@@ -21,13 +21,11 @@ export default function Goals() {
 
   const [formData, setFormData] = useState({
     name: '',
-    targetAmount: '',
+    targetValue: '',
     targetDate: '',
-    initialAmount: '',
     monthlyContribution: '',
-    expectedReturn: '10',
-    priority: 'medium',
-    notes: ''
+    expectedYield: '10',
+    color: '#10b981'
   });
 
   const [simulation, setSimulation] = useState({
@@ -49,7 +47,7 @@ export default function Goals() {
         portfolioService.getAllocation()
       ]);
       setGoals(goalsRes.data?.goals || []);
-      setPortfolioValue(portfolioRes.data?.allocation?.totalValue || 0);
+      setPortfolioValue(portfolioRes.data?.totalValue || 0);
     } catch (error) {
       toast.error('Erro ao carregar metas');
     } finally {
@@ -61,9 +59,9 @@ export default function Goals() {
     const monthsRemaining = differenceInMonths(new Date(goal.target_date), new Date());
     if (monthsRemaining <= 0) return [];
 
-    const monthlyRate = (goal.expected_return || 10) / 100 / 12;
+    const monthlyRate = (parseFloat(goal.expected_yield) || 10) / 100 / 12;
     const data = [];
-    let balance = parseFloat(goal.current_amount || goal.initial_amount || 0);
+    let balance = parseFloat(goal.currentValue || 0);
 
     for (let i = 0; i <= Math.min(monthsRemaining, 120); i++) {
       if (i > 0) {
@@ -73,7 +71,7 @@ export default function Goals() {
         data.push({
           month: format(addMonths(new Date(), i), 'MMM/yy', { locale: ptBR }),
           value: balance,
-          target: goal.target_amount
+          target: goal.target_value
         });
       }
     }
@@ -123,7 +121,7 @@ export default function Goals() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.name || !formData.targetAmount || !formData.targetDate) {
+    if (!formData.name || !formData.targetValue || !formData.targetDate) {
       toast.error('Preencha os campos obrigatórios');
       return;
     }
@@ -159,26 +157,24 @@ export default function Goals() {
     setEditingGoal(goal);
     setFormData({
       name: goal.name,
-      targetAmount: goal.target_amount,
+      targetValue: goal.target_value,
       targetDate: goal.target_date?.split('T')[0] || '',
-      initialAmount: goal.initial_amount || '',
       monthlyContribution: goal.monthly_contribution || '',
-      expectedReturn: goal.expected_return || '10',
-      priority: goal.priority || 'medium',
-      notes: goal.notes || ''
+      expectedYield: goal.expected_yield || '10',
+      color: goal.color || '#10b981'
     });
     setShowModal(true);
   };
 
   const resetForm = () => {
     setEditingGoal(null);
-    setFormData({ name: '', targetAmount: '', targetDate: '', initialAmount: '', monthlyContribution: '', expectedReturn: '10', priority: 'medium', notes: '' });
+    setFormData({ name: '', targetValue: '', targetDate: '', monthlyContribution: '', expectedYield: '10', color: '#10b981' });
   };
 
   const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0);
 
   const getGoalStatus = (goal) => {
-    const progress = ((goal.current_amount || 0) / goal.target_amount) * 100;
+    const progress = goal.progress || ((goal.currentValue || 0) / (goal.target_value || 1)) * 100;
     const monthsRemaining = differenceInMonths(new Date(goal.target_date), new Date());
 
     if (progress >= 100) return { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/20', label: 'Concluída' };
@@ -236,7 +232,7 @@ export default function Goals() {
             <span className="text-[10px] sm:text-xs text-amber-400">Soma das Metas</span>
           </div>
           <p className="text-lg sm:text-2xl font-bold text-white">
-            {formatCurrency(goals.reduce((sum, g) => sum + parseFloat(g.target_amount || 0), 0))}
+            {formatCurrency(goals.reduce((sum, g) => sum + parseFloat(g.target_value || 0), 0))}
           </p>
         </div>
         <div className="stat-card bg-gradient-to-br from-purple-500/20 to-pink-500/10 border-purple-500/20">
@@ -245,7 +241,7 @@ export default function Goals() {
             <span className="text-[10px] sm:text-xs text-purple-400">Concluídas</span>
           </div>
           <p className="text-lg sm:text-2xl font-bold text-white">
-            {goals.filter(g => ((g.current_amount || 0) / g.target_amount) >= 1).length}
+            {goals.filter(g => (g.progress || 0) >= 100).length}
           </p>
         </div>
       </div>
@@ -255,7 +251,7 @@ export default function Goals() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {goals.map((goal) => {
             const status = getGoalStatus(goal);
-            const progress = Math.min(100, ((goal.current_amount || 0) / goal.target_amount) * 100);
+            const progress = Math.min(100, goal.progress || ((goal.currentValue || 0) / (goal.target_value || 1)) * 100);
             const projection = calculateProjection(goal);
             const monthsRemaining = differenceInMonths(new Date(goal.target_date), new Date());
 
@@ -299,11 +295,11 @@ export default function Goals() {
                 <div className="grid grid-cols-2 gap-3 mb-4 text-sm">
                   <div>
                     <p className="text-slate-500 text-xs">Meta</p>
-                    <p className="text-white font-mono">{formatCurrency(goal.target_amount)}</p>
+                    <p className="text-white font-mono">{formatCurrency(goal.target_value)}</p>
                   </div>
                   <div>
-                    <p className="text-slate-500 text-xs">Atual</p>
-                    <p className="text-emerald-400 font-mono">{formatCurrency(goal.current_amount || 0)}</p>
+                    <p className="text-slate-500 text-xs">Patrimônio</p>
+                    <p className="text-emerald-400 font-mono">{formatCurrency(goal.currentValue || 0)}</p>
                   </div>
                   <div>
                     <p className="text-slate-500 text-xs">Prazo</p>
@@ -375,7 +371,7 @@ export default function Goals() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm text-slate-400 mb-2">Valor Alvo *</label>
-                  <input type="number" value={formData.targetAmount} onChange={(e) => setFormData({ ...formData, targetAmount: e.target.value })} className="input" placeholder="500000" required />
+                  <input type="number" value={formData.targetValue} onChange={(e) => setFormData({ ...formData, targetValue: e.target.value })} className="input" placeholder="500000" required />
                 </div>
                 <div>
                   <label className="block text-sm text-slate-400 mb-2">Data Alvo *</label>
@@ -385,27 +381,12 @@ export default function Goals() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm text-slate-400 mb-2">Valor Inicial</label>
-                  <input type="number" value={formData.initialAmount} onChange={(e) => setFormData({ ...formData, initialAmount: e.target.value })} className="input" placeholder="0" />
-                </div>
-                <div>
                   <label className="block text-sm text-slate-400 mb-2">Aporte Mensal</label>
                   <input type="number" value={formData.monthlyContribution} onChange={(e) => setFormData({ ...formData, monthlyContribution: e.target.value })} className="input" placeholder="1000" />
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm text-slate-400 mb-2">Retorno Esperado (%)</label>
-                  <input type="number" step="0.1" value={formData.expectedReturn} onChange={(e) => setFormData({ ...formData, expectedReturn: e.target.value })} className="input" />
-                </div>
-                <div>
-                  <label className="block text-sm text-slate-400 mb-2">Prioridade</label>
-                  <select value={formData.priority} onChange={(e) => setFormData({ ...formData, priority: e.target.value })} className="input">
-                    <option value="low">Baixa</option>
-                    <option value="medium">Média</option>
-                    <option value="high">Alta</option>
-                  </select>
+                  <input type="number" step="0.1" value={formData.expectedYield} onChange={(e) => setFormData({ ...formData, expectedYield: e.target.value })} className="input" />
                 </div>
               </div>
 

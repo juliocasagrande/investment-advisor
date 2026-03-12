@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r api. 'c:\\\\Users\\\\jlcasagrande\\\\OneDrive - CTG Brasil\\\\CTG Br\\\\02 - PYTHON\\\\investment-advisor/frontend/src' --include=*.jsx --include=*.js)"
+    ]
+  }
+}
