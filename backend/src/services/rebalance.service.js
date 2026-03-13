@@ -66,12 +66,12 @@ class RebalanceService {
 
       // Estimar com base no yield das classes
       const classesResult = await pool.query(`
-        SELECT ac.name, ac.expected_yield, ac.color,
+        SELECT ac.id, ac.name, ac.expected_yield, ac.color,
           COALESCE(SUM(a.quantity * COALESCE(a.current_price, a.average_price)), 0) as value
         FROM asset_classes ac
         LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = ac.user_id AND a.quantity > 0
         WHERE ac.user_id = $1
-        GROUP BY ac.id
+        GROUP BY ac.id, ac.name, ac.expected_yield, ac.color
       `, [userId]);
 
       let estimatedAnnual = 0;
@@ -117,8 +117,8 @@ class RebalanceService {
         }
       }
 
-      // Usar o maior valor entre realizado e estimado
-      const finalAnnual = Math.max(annualDividends, estimatedAnnual);
+      // Se há dividendos reais registrados, usar eles; caso contrário usar estimativa
+      const finalAnnual = annualDividends > 0 ? annualDividends : estimatedAnnual;
 
       return {
         totalMonthly: Math.round(finalAnnual / 12 * 100) / 100,
@@ -128,7 +128,7 @@ class RebalanceService {
         breakdown
       };
     } catch (error) {
-      console.error('Erro ao calcular renda passiva:', error);
+      console.error('Erro ao calcular renda passiva:', error.message, error.stack);
       return { totalMonthly: 0, totalAnnual: 0, realizedLast12Months: 0, estimatedAnnual: 0, breakdown: [] };
     }
   }
