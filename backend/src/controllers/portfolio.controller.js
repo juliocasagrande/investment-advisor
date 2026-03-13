@@ -174,13 +174,26 @@ class PortfolioController {
   async calculateContribution(req, res) {
     try {
       const { amount } = req.body;
-      
       if (!amount || amount <= 0) {
         return res.status(400).json({ error: 'Informe um valor válido' });
       }
-      
-      const targets = await rebalanceService.calculateContributionTarget(req.userId, parseFloat(amount));
-      return res.json({ amount: parseFloat(amount), targets });
+      let macroContext = null;
+      try {
+        const macroAnalysis = await macroService.getOrCreateAnalysis(req.userId);
+        if (macroAnalysis && !macroAnalysis.isDefault && macroAnalysis.recommendedClass) {
+          const recommended = [macroAnalysis.recommendedClass.name];
+          if (macroAnalysis.scenarios) {
+            for (const scenario of macroAnalysis.scenarios) {
+              if (scenario.probability === 'alta' && scenario.benefitedAssets) {
+                recommended.push(...scenario.benefitedAssets);
+              }
+            }
+          }
+          macroContext = { recommendedClasses: [...new Set(recommended)], recommendedClass: macroAnalysis.recommendedClass };
+        }
+      } catch (e) {}
+      const targets = await rebalanceService.calculateContributionTarget(req.userId, parseFloat(amount), macroContext);
+      return res.json({ amount: parseFloat(amount), targets, macroContext });
     } catch (error) {
       console.error('Erro ao calcular aporte:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });

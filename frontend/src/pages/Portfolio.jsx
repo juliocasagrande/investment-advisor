@@ -69,29 +69,28 @@ export default function Portfolio() {
 
     try {
       const response = await portfolioService.calculateContribution(amount);
-      console.log('Contribution response:', response.data);
-      
       const targets = response.data?.targets || [];
-      
+      const macroCtx = response.data?.macroContext || null;
+
       // Enriquecer com ativos específicos de cada classe
       const enrichedTargets = targets.map(target => {
         const classAssets = assets.filter(a => {
           const assetClass = classes.find(c => c.id === a.asset_class_id);
           return assetClass?.id === target.classId;
         });
-        
         return {
           ...target,
           assets: classAssets.map(a => ({
             id: a.id,
             ticker: a.ticker,
             name: a.name,
-            currentValue: (a.quantity || 0) * (a.current_price || a.average_price || 0)
           }))
         };
       });
-      
+
       setContributionTargets(enrichedTargets);
+      // Salvar o contexto macro retornado pelo backend para exibição
+      if (macroCtx) setMacroAnalysis(prev => ({ ...prev, _macroCtx: macroCtx }));
     } catch (error) {
       console.error('Erro ao calcular:', error);
       toast.error('Erro ao calcular');
@@ -236,20 +235,20 @@ export default function Portfolio() {
 
         {/* Contribution Calculator */}
         <div className="card p-5">
-          <h3 className="font-semibold text-white mb-4 flex items-center gap-2">
+          <h3 className="font-semibold text-white mb-1 flex items-center gap-2">
             <Calculator className="w-5 h-5 text-emerald-400" />
             Onde Aportar?
           </h3>
           <p className="text-sm text-slate-400 mb-4">
-            Informe o valor do aporte para saber onde investir para rebalancear
+            Distribuição inteligente considerando seus targets e o cenário macro atual
           </p>
-          
+
           <div className="flex gap-2 mb-4">
             <input
               type="number"
               value={contributionAmount}
               onChange={(e) => setContributionAmount(e.target.value)}
-              placeholder="Valor do aporte"
+              placeholder="Valor do aporte (R$)"
               className="input flex-1"
               onKeyDown={(e) => e.key === 'Enter' && calculateContribution()}
             />
@@ -258,51 +257,133 @@ export default function Portfolio() {
             </button>
           </div>
 
-          {contributionTargets.length > 0 && (
-            <div className="space-y-3 max-h-80 overflow-y-auto">
-              {contributionTargets.map((target, i) => (
-                <div key={i} className="p-3 bg-slate-700/30 rounded-xl border border-slate-600/50">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: target.color || '#3B82F6' }} />
-                      <span className="font-medium text-white">{target.className}</span>
-                    </div>
-                    <span className="font-mono text-emerald-400 font-bold">
-                      {formatCurrency(target.amount)}
-                    </span>
+          {contributionTargets.length > 0 && (() => {
+            const macroCtx = macroAnalysis?._macroCtx;
+            const hasMacro = !!macroCtx;
+            const boostedTargets = contributionTargets.filter(t => t.isMacroBoosted);
+            const normalTargets = contributionTargets.filter(t => !t.isMacroBoosted);
+
+            return (
+              <div className="space-y-3">
+                {/* Macro context banner */}
+                {hasMacro && macroCtx.recommendedClass && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-purple-500/10 border border-purple-500/20 rounded-lg">
+                    <Zap className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                    <p className="text-xs text-purple-300">
+                      <span className="font-semibold text-purple-200">Cenário macro:</span>{' '}
+                      {macroCtx.recommendedClass.name} está mais favorecida —{' '}
+                      {macroCtx.recommendedClass.reason}
+                    </p>
                   </div>
-                  <p className="text-xs text-slate-400 mb-2">
-                    {(target.currentPercentage || 0).toFixed(1)}% <ArrowRight className="w-3 h-3 inline" /> {(target.targetPercentage || 0).toFixed(1)}%
-                    <span className="ml-2 text-emerald-400">({(target.percentage || 0).toFixed(0)}% do aporte)</span>
-                  </p>
-                  
-                  {/* Ativos específicos da classe */}
-                  {target.assets && target.assets.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-slate-600/50">
-                      <p className="text-xs text-slate-500 mb-1">Ativos nesta classe:</p>
-                      <div className="flex flex-wrap gap-1">
-                        {target.assets.map((asset, j) => (
-                          <span key={j} className="text-xs bg-slate-600/50 text-slate-300 px-2 py-0.5 rounded">
-                            {asset.ticker}
+                )}
+
+                {/* Boosted classes first */}
+                {boostedTargets.length > 0 && (
+                  <div className="space-y-2">
+                    {hasMacro && <p className="text-xs font-medium text-purple-400 uppercase tracking-wide">✦ Favorecidas pelo cenário atual</p>}
+                    {boostedTargets.map((target, i) => (
+                      <div key={i} className="p-3 bg-purple-500/10 border border-purple-500/25 rounded-xl">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: target.color || '#A855F7' }} />
+                            <span className="font-semibold text-white text-sm">{target.className}</span>
+                            <span className="text-xs bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full">macro ↑</span>
+                          </div>
+                          <span className="font-mono text-emerald-400 font-bold text-sm">
+                            {formatCurrency(target.amount)}
                           </span>
-                        ))}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-400 mb-1.5">
+                          <span>{target.currentPercentage}%</span>
+                          <ArrowRight className="w-3 h-3" />
+                          <span className="text-blue-400">{target.targetPercentage}% target</span>
+                          <span className="ml-auto text-slate-500">{target.percentage}% do aporte</span>
+                        </div>
+                        {target.willReachTarget && (
+                          <p className="text-xs text-emerald-400 flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" /> Atinge o target com este aporte
+                          </p>
+                        )}
+                        {target.assets?.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-purple-500/20">
+                            {target.assets.map((a, j) => (
+                              <span key={j} className="text-xs bg-slate-700/60 text-slate-300 px-2 py-0.5 rounded">{a.ticker}</span>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  )}
-                  
-                  {/* Sugestão baseada no cenário macro */}
-                  {macroAnalysis && !macroAnalysis.isDefault && (
-                    <div className="mt-2 pt-2 border-t border-slate-600/50">
-                      <p className="text-xs text-purple-400 flex items-center gap-1">
-                        <Zap className="w-3 h-3" />
-                        Favorecido pelo cenário atual
-                      </p>
-                    </div>
-                  )}
+                    ))}
+                  </div>
+                )}
+
+                {/* Normal classes */}
+                {normalTargets.length > 0 && (
+                  <div className="space-y-2">
+                    {hasMacro && boostedTargets.length > 0 && (
+                      <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Rebalanceamento complementar</p>
+                    )}
+                    {normalTargets.map((target, i) => (
+                      <div key={i} className="p-3 bg-slate-700/30 border border-slate-600/40 rounded-xl">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: target.color || '#3B82F6' }} />
+                            <span className="font-medium text-white text-sm">{target.className}</span>
+                          </div>
+                          <span className="font-mono text-emerald-400 font-bold text-sm">
+                            {formatCurrency(target.amount)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
+                          <span>{target.currentPercentage}%</span>
+                          <ArrowRight className="w-3 h-3" />
+                          <span className="text-blue-400">{target.targetPercentage}% target</span>
+                          <span className="ml-auto text-slate-500">{target.percentage}% do aporte</span>
+                        </div>
+                        {target.willReachTarget && (
+                          <p className="text-xs text-emerald-400 flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" /> Atinge o target com este aporte
+                          </p>
+                        )}
+                        {target.assets?.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-slate-600/40">
+                            {target.assets.map((a, j) => (
+                              <span key={j} className="text-xs bg-slate-600/50 text-slate-300 px-2 py-0.5 rounded">{a.ticker}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Total bar */}
+                <div className="pt-2 border-t border-slate-700/50">
+                  <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                    <span>Distribuição do aporte</span>
+                    <span className="text-white font-mono">{formatCurrency(parseFloat(contributionAmount))}</span>
+                  </div>
+                  <div className="flex h-2 rounded-full overflow-hidden gap-0.5">
+                    {contributionTargets.map((t, i) => (
+                      <div
+                        key={i}
+                        style={{ width: `${t.percentage}%`, backgroundColor: t.color || '#3B82F6' }}
+                        title={`${t.className}: ${t.percentage}%`}
+                        className="rounded-full"
+                      />
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+                    {contributionTargets.map((t, i) => (
+                      <div key={i} className="flex items-center gap-1">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: t.color }} />
+                        <span className="text-xs text-slate-400">{t.className} <span className="text-slate-300">{t.percentage}%</span></span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

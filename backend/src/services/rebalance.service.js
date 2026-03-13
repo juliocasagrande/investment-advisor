@@ -214,37 +214,94 @@ class RebalanceService {
     }
   }
 
-  async calculateContributionTarget(userId, amount) {
+  async calculateContributionTarget(userId, amount, macroContext = null) {
     try {
       const allocation = await this.calculateAllocation(userId);
-      const targets = [];
       const newTotal = allocation.totalValue + amount;
 
+      // Calcular o quanto cada classe precisa para atingir o target
+      const classNeeds = [];
       for (const cls of allocation.allocation) {
         if (cls.targetPercentage <= 0) continue;
-        
         const targetValue = (cls.targetPercentage / 100) * newTotal;
-        const needed = targetValue - cls.currentValue;
-        
+        const needed = Math.max(0, targetValue - cls.currentValue);
         if (needed > 0) {
-          const toInvest = Math.min(needed, amount);
-          const percentage = (toInvest / amount) * 100;
-          
-          if (percentage > 1) {
-            targets.push({
-              classId: cls.id,
-              className: cls.name,
-              color: cls.color,
-              currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
-              targetPercentage: cls.targetPercentage,
-              amount: Math.round(toInvest * 100) / 100,
-              percentage: Math.round(percentage * 10) / 10
-            });
+          classNeeds.push({
+            classId: cls.id,
+            className: cls.name,
+            color: cls.color,
+            currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
+            targetPercentage: cls.targetPercentage,
+            currentValue: cls.currentValue,
+            targetValue,
+            needed,
+            isMacroBoosted: false,
+            macroReason: null
+          });
+        }
+      }
+
+      // Aplicar boost macro se disponível
+      if (macroContext) {
+        const { recommendedClasses = [] } = macroContext;
+        // recommendedClasses: array de nomes de classes favorecidas (ordem de prioridade)
+        for (const need of classNeeds) {
+          const matchIdx = recommendedClasses.findIndex(rc =>
+            need.className.toLowerCase().includes(rc.toLowerCase()) ||
+            rc.toLowerCase().includes(need.className.toLowerCase())
+          );
+          if (matchIdx !== -1) {
+            need.isMacroBoosted = true;
+            need.macroBoostRank = matchIdx; // menor = maior prioridade
           }
         }
       }
 
-      targets.sort((a, b) => b.percentage - a.percentage);
+      // Ordenar: classes macro-favorecidas primeiro (por rank), depois por maior necessidade
+      classNeeds.sort((a, b) => {
+        if (a.isMacroBoosted && !b.isMacroBoosted) return -1;
+        if (!a.isMacroBoosted && b.isMacroBoosted) return 1;
+        if (a.isMacroBoosted && b.isMacroBoosted) {
+          return (a.macroBoostRank ?? 99) - (b.macroBoostRank ?? 99);
+        }
+        return b.needed - a.needed;
+      });
+
+      // Distribuir o aporte respeitando o cap de cada classe
+      let remaining = amount;
+      const targets = [];
+
+      for (const cls of classNeeds) {
+        if (remaining <= 0) break;
+        const toInvest = Math.min(cls.needed, remaining);
+        if (toInvest < 0.01) continue;
+        remaining -= toInvest;
+        targets.push({
+          classId: cls.classId,
+          className: cls.className,
+          color: cls.color,
+          currentPercentage: cls.currentPercentage,
+          targetPercentage: cls.targetPercentage,
+          amount: Math.round(toInvest * 100) / 100,
+          percentage: Math.round((toInvest / amount) * 1000) / 10,
+          isMacroBoosted: cls.isMacroBoosted,
+          willReachTarget: toInvest >= cls.needed - 0.01
+        });
+      }
+
+      // Se sobrou dinheiro (todos os targets atingidos), distribuir proporcionalmente pelas classes macro-favorecidas ou todas
+      if (remaining > 0.01 && targets.length > 0) {
+        const distributeTo = targets.filter(t => t.isMacroBoosted).length > 0
+          ? targets.filter(t => t.isMacroBoosted)
+          : targets;
+        const totalPct = distributeTo.reduce((s, t) => s + t.targetPercentage, 0);
+        for (const t of distributeTo) {
+          const extra = remaining * (t.targetPercentage / totalPct);
+          t.amount = Math.round((t.amount + extra) * 100) / 100;
+          t.percentage = Math.round((t.amount / amount) * 1000) / 10;
+        }
+      }
+
       return targets;
     } catch (error) {
       console.error('Erro ao calcular contribuição:', error);
