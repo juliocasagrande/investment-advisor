@@ -8,7 +8,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart as RePieChart, Pie, Cell
 } from 'recharts';
-import { format, startOfMonth, endOfMonth, subMonths, addMonths } from 'date-fns';
+import { format, startOfMonth, endOfMonth, subMonths, addMonths, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import toast from 'react-hot-toast';
 
@@ -107,7 +107,7 @@ export default function Dividends() {
   const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0);
 
   const currentMonthDividends = dividends.filter(d => {
-    const date = new Date(d.payment_date);
+    const date = parseISO(d.payment_date);
     return date.getMonth() === currentMonth.getMonth() && date.getFullYear() === currentMonth.getFullYear();
   });
 
@@ -180,7 +180,11 @@ export default function Dividends() {
             {monthlyData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={monthlyData.slice(-12)}>
-                  <XAxis dataKey="month" tick={{ fill: '#64748B', fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
+                  <XAxis dataKey="month" tick={{ fill: '#64748B', fontSize: 10 }} tickFormatter={(v) => {
+                    const months = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+                    const m = parseInt(v.split('-')[1], 10);
+                    return months[m - 1] || v;
+                  }} />
                   <YAxis tick={{ fill: '#64748B', fontSize: 10 }} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
                   <Tooltip content={({ active, payload, label }) => active && payload?.length ? (
                     <div className="bg-slate-800 border border-slate-600 p-2 rounded-lg text-xs">
@@ -262,7 +266,7 @@ export default function Dividends() {
                 <div className="min-w-0">
                   <p className="font-medium text-white text-sm truncate">{div.ticker}</p>
                   <p className="text-xs text-slate-500">
-                    {format(new Date(div.payment_date), 'dd/MM')} • {div.type === 'DIVIDEND' ? 'Div' : div.type === 'JCP' ? 'JCP' : 'Rend'}
+                    {format(parseISO(div.payment_date), 'dd/MM')} • {div.type === 'DIVIDEND' ? 'Div' : div.type === 'JCP' ? 'JCP' : 'Rend'}
                   </p>
                 </div>
               </div>
