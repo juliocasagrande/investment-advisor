@@ -261,7 +261,18 @@ function StockDetailModal({ stock, onClose }) {
           {stock.recommendation?.reason && (
             <div className="mb-4 p-3 bg-slate-800/50 rounded-xl flex items-start gap-2">
               <Info className="w-4 h-4 text-slate-500 flex-shrink-0 mt-0.5" />
-              <p className="text-xs text-slate-400">{stock.recommendation.reason}</p>
+              <div>
+                <p className="text-xs text-slate-400">{stock.recommendation.reason}</p>
+                {stock.violations?.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {stock.violations.map((v, i) => (
+                      <span key={i} className="text-[10px] px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full">
+                        {v}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -542,13 +553,22 @@ export default function Screener() {
                           </div>
                           <p className="text-xs text-slate-500 truncate">{stock.name}</p>
                           {stock.recommendation?.reason && !stock.noFundamentals && (
-                            <p className="text-[10px] text-slate-600 mt-1 flex items-center gap-1">
+                            <p className="text-[10px] text-slate-600 mt-1 flex items-start gap-1">
                               {stock.recommendation.action === 'MANTER'
-                                ? <CheckCircle className="w-3 h-3 text-emerald-600" />
-                                : <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                ? <CheckCircle className="w-3 h-3 text-emerald-600 flex-shrink-0 mt-px" />
+                                : <AlertTriangle className="w-3 h-3 text-amber-600 flex-shrink-0 mt-px" />
                               }
                               {stock.recommendation.reason}
                             </p>
+                          )}
+                          {stock.violations?.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1.5">
+                              {stock.violations.map((v, vi) => (
+                                <span key={vi} className="text-[9px] px-1.5 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full">
+                                  {v}
+                                </span>
+                              ))}
+                            </div>
                           )}
                         </div>
 
