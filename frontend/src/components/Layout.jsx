@@ -19,6 +19,8 @@ import {
   Search
 } from 'lucide-react';
 
+import ChatAdvisor from './ChatAdvisor';
+
 const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/portfolio', label: 'Portfólio', icon: PieChart },
@@ -213,6 +215,9 @@ export default function Layout() {
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
+
+      {/* AI Chat Advisor — disponível em todas as páginas */}
+      <ChatAdvisor />
     </div>
   );
 }

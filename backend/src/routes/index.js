@@ -12,6 +12,8 @@ const taxReportController = require('../controllers/tax-report.controller');
 const screenerController = require('../controllers/screener.controller');
 const settingsController = require('../controllers/settings.controller');
 
+const chatController = require('../controllers/chat.controller');
+
 // ==================== AUTH ====================
 router.post('/auth/register', (req, res) => authController.register(req, res));
 router.post('/auth/login', (req, res) => authController.login(req, res));
@@ -80,6 +82,9 @@ router.post('/screener/suggestions', auth, (req, res) => screenerController.getS
 router.get('/screener/fundamentals/:ticker', auth, (req, res) => screenerController.getFundamentals(req, res));
 router.post('/screener/filters', auth, (req, res) => screenerController.saveFilters(req, res));
 router.get('/screener/filters', auth, (req, res) => screenerController.listFilters(req, res));
+
+// ==================== CHAT ====================
+router.post('/chat', auth, (req, res) => chatController.sendMessage(req, res));
 
 // ==================== SETTINGS ====================
 router.get('/settings', auth, (req, res) => settingsController.getSettings(req, res));
