@@ -14,6 +14,10 @@ async function ensureColumns() {
     "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dividend_yield DECIMAL(10,4)",
     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_update TIMESTAMP",
+    // Corrigir typo histórico: copiar grok_api_key -> groq_api_key onde groq está null
+    `UPDATE user_settings SET groq_api_key = grok_api_key 
+     WHERE grok_api_key IS NOT NULL AND grok_api_key != '' 
+     AND (groq_api_key IS NULL OR groq_api_key = '')`,
     `CREATE TABLE IF NOT EXISTS quotes_cache (
       id SERIAL PRIMARY KEY,
       ticker VARCHAR(20) UNIQUE NOT NULL,
