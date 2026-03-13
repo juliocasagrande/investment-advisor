@@ -129,13 +129,8 @@ class ScreenerController {
     for (let i = 0; i < unique.length; i += batchSize) {
       const batch = unique.slice(i, i + batchSize).join(',');
       try {
-        const response = await axios.get(
-          `https://brapi.dev/api/quote/${batch}`,
-          {
-            params: { token, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
-            timeout: 25000
-          }
-        );
+        const batchUrl = `https://brapi.dev/api/quote/${batch}?token=${token}&modules=defaultKeyStatistics,financialData&fundamental=true`;
+        const response = await axios.get(batchUrl, { timeout: 25000 });
         if (response.data?.results) {
           for (const stock of response.data.results) {
             const fundamentals = this.extractBRFundamentals(stock);
@@ -269,15 +264,13 @@ class ScreenerController {
         } else {
           for (const asset of brAssets) {
             try {
-              const resp = await axios.get(
-                `https://brapi.dev/api/quote/${asset.ticker}`,
-                {
-                  params: { token: brapiToken, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
-                  timeout: 15000
-                }
-              );
+              const brapiUrl = `https://brapi.dev/api/quote/${asset.ticker}?token=${brapiToken}&modules=defaultKeyStatistics,financialData&fundamental=true`;
+              console.log(`[Screener] Buscando ${asset.ticker}:`, brapiUrl.replace(brapiToken, 'TOKEN'));
+              const resp = await axios.get(brapiUrl, { timeout: 15000 });
+              console.log(`[Screener] Resposta ${asset.ticker}:`, JSON.stringify(resp.data).substring(0, 300));
               const stockData = resp.data?.results?.[0];
               if (!stockData) {
+                console.warn(`[Screener] Sem dados para ${asset.ticker}`);
                 this.pushBasicPosition(analysis, asset, 'Dados não disponíveis na Brapi');
                 continue;
               }
@@ -310,8 +303,13 @@ class ScreenerController {
                 market: 'BR'
               });
             } catch (e) {
-              console.error(`Erro ao buscar ${asset.ticker}:`, e.message);
-              this.pushBasicPosition(analysis, asset, 'Erro ao buscar dados na Brapi');
+              console.error(`[Screener] ERRO ao buscar ${asset.ticker}:`, e.message);
+              console.error(`[Screener] Status:`, e.response?.status, 'Data:', JSON.stringify(e.response?.data));
+              const errMsg = e.response?.status === 401 ? 'Token Brapi inválido'
+                           : e.response?.status === 402 ? 'Limite do plano Brapi atingido'
+                           : e.response?.status === 404 ? 'Ativo não encontrado na Brapi'
+                           : `Erro ao buscar dados na Brapi (${e.response?.status || e.code || e.message})`;
+              this.pushBasicPosition(analysis, asset, errMsg);
             }
             await new Promise(r => setTimeout(r, 300));
           }
@@ -446,11 +444,8 @@ class ScreenerController {
       for (const stock of candidates) {
         try {
           const response = await axios.get(
-            `https://brapi.dev/api/quote/${stock}`,
-            {
-              params: { token, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
-              timeout: 15000
-            }
+            `https://brapi.dev/api/quote/${stock}?token=${token}&modules=defaultKeyStatistics,financialData&fundamental=true`,
+            { timeout: 15000 }
           );
           if (response.data?.results?.[0]) {
             const data = response.data.results[0];
@@ -486,11 +481,8 @@ class ScreenerController {
       if (!token) return res.status(400).json({ error: 'Configure seu token Brapi' });
 
       const response = await axios.get(
-        `https://brapi.dev/api/quote/${ticker}`,
-        {
-          params: { token, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
-          timeout: 15000
-        }
+        `https://brapi.dev/api/quote/${ticker}?token=${token}&modules=defaultKeyStatistics,financialData&fundamental=true`,
+        { timeout: 15000 }
       );
       if (!response.data?.results?.[0]) return res.status(404).json({ error: 'Ação não encontrada' });
 
@@ -534,42 +526,50 @@ class ScreenerController {
 
   // Brapi: campos corretos com conversões certas
   extractBRFundamentals(stock) {
-    // Com modules=defaultKeyStatistics,financialData:
-    //   P/L, P/VP, DY, EV/EBITDA → stock.defaultKeyStatistics.*
-    //   ROE, ROA, margens, liquidez, dívida, crescimento → stock.financialData.*
-    //   P/L também está na raiz como stock.priceEarnings (fallback)
+    // Estrutura da resposta Brapi confirmada pela documentação oficial:
+    //
+    // Raiz: priceEarnings, earningsPerShare, marketCap, regularMarketPrice
+    // financialData: currentRatio, debtToEquity, returnOnAssets, returnOnEquity,
+    //                revenueGrowth, grossMargins, ebitdaMargins, operatingMargins,
+    //                profitMargins, ebitda, totalRevenue, totalDebt
+    // defaultKeyStatistics (se disponível no plano): priceToBook, dividendYield,
+    //                forwardPE, enterpriseToEbitda
+    //
+    // IMPORTANTE: debtToEquity vem em escala percentual (ex: 101.6 = 1.016x)
+    // IMPORTANTE: margens, ROE, ROA vêm como decimal (ex: 0.279 = 27.9%)
+
     const ks = stock.defaultKeyStatistics || {};
     const fd = stock.financialData || {};
 
-    const pct = (v) => (v != null && !isNaN(v)) ? v * 100 : null;
-    const num = (v) => (v != null && !isNaN(v)) ? v : null;
+    const pct  = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) * 100 : null;
+    const num  = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) : null;
 
-    return {
-      // P/L: forwardPE (defaultKeyStatistics) ou priceEarnings (raiz)
-      pl:               num(ks.forwardPE) ?? num(stock.priceEarnings),
-      // P/VP: priceToBook (defaultKeyStatistics)
-      pvp:              num(ks.priceToBook),
-      // PSR: não disponível diretamente — tentativa pela raiz
-      psr:              num(stock.priceToSalesTrailing12Months),
-      // DY: dividendYield em decimal (ex: 0.065 = 6.5%) — multiplicar por 100
-      dy:               ks.dividendYield != null ? pct(ks.dividendYield) : null,
-      // EV/EBITDA: enterpriseToEbitda (defaultKeyStatistics)
-      evEbitda:         num(ks.enterpriseToEbitda),
-      // Margem EBIT (Operacional): operatingMargins (financialData) em decimal
-      margemEbit:       fd.operatingMargins != null ? pct(fd.operatingMargins) : null,
-      // Margem Líquida: profitMargins (financialData) em decimal
-      margemLiquida:    fd.profitMargins != null ? pct(fd.profitMargins) : null,
-      // Liquidez Corrente: currentRatio (financialData)
-      liquidezCorrente: num(fd.currentRatio),
-      // ROIC proxy via returnOnAssets (financialData) em decimal
-      roic:             fd.returnOnAssets != null ? pct(fd.returnOnAssets) : null,
-      // ROE: returnOnEquity (financialData) em decimal
-      roe:              fd.returnOnEquity != null ? pct(fd.returnOnEquity) : null,
-      // Dívida/PL: debtToEquity (financialData) — já vem em percentual (ex: 101.6 = 1.016x)
-      dividaPl:         fd.debtToEquity != null ? fd.debtToEquity / 100 : null,
-      // Crescimento Receita: revenueGrowth (financialData) em decimal
-      crescReceita:     fd.revenueGrowth != null ? pct(fd.revenueGrowth) : null,
-    };
+    // P/L: raiz sempre tem priceEarnings; ks.forwardPE se disponível
+    const pl = num(ks.forwardPE) ?? num(stock.priceEarnings);
+
+    // P/VP: vem em defaultKeyStatistics (plano pago) — sem fallback confiável
+    const pvp = num(ks.priceToBook);
+
+    // DY: defaultKeyStatistics.dividendYield em decimal
+    const dy = ks.dividendYield != null ? pct(ks.dividendYield) : null;
+
+    // EV/EBITDA: defaultKeyStatistics
+    const evEbitda = num(ks.enterpriseToEbitda);
+
+    // Todos abaixo vêm de financialData (confirmado na doc):
+    const margemEbit       = fd.operatingMargins != null ? pct(fd.operatingMargins) : null;
+    const margemLiquida    = fd.profitMargins    != null ? pct(fd.profitMargins)    : null;
+    const liquidezCorrente = num(fd.currentRatio);
+    const roic             = fd.returnOnAssets   != null ? pct(fd.returnOnAssets)   : null;
+    const roe              = fd.returnOnEquity   != null ? pct(fd.returnOnEquity)   : null;
+    // debtToEquity: 101.6 significa 1.016x — dividir por 100
+    const dividaPl         = fd.debtToEquity     != null ? parseFloat(fd.debtToEquity) / 100 : null;
+    const crescReceita     = fd.revenueGrowth    != null ? pct(fd.revenueGrowth)    : null;
+    // PSR não existe diretamente na Brapi
+    const psr = null;
+
+    return { pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida,
+             liquidezCorrente, roic, roe, dividaPl, crescReceita };
   }
 
   // AlphaVantage: campos do OVERVIEW endpoint
