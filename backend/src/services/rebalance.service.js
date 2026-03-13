@@ -69,15 +69,43 @@ class RebalanceService {
         SELECT ac.id, ac.name, ac.expected_yield, ac.color,
           COALESCE(SUM(a.quantity * COALESCE(a.current_price, a.average_price)), 0) as value
         FROM asset_classes ac
-        LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = ac.user_id AND a.quantity > 0
+        LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = $1 AND a.quantity > 0
         WHERE ac.user_id = $1
         GROUP BY ac.id, ac.name, ac.expected_yield, ac.color
       `, [userId]);
 
+      // Fallback: se não encontrou classes com valor, buscar ativos direto
+      const totalFromClasses = classesResult.rows.reduce((sum, r) => sum + parseFloat(r.value || 0), 0);
+      
+      let assetsDirectResult = { rows: [] };
+      if (totalFromClasses === 0) {
+        assetsDirectResult = await pool.query(`
+          SELECT 
+            COALESCE(ac.name, a.asset_type, 'Outros') as class_name,
+            COALESCE(ac.color, '#3B82F6') as color,
+            COALESCE(ac.expected_yield, 8) as expected_yield,
+            SUM(a.quantity * COALESCE(a.current_price, a.average_price)) as value
+          FROM assets a
+          LEFT JOIN asset_classes ac ON ac.id = a.asset_class_id
+          WHERE a.user_id = $1 AND a.quantity > 0
+          GROUP BY COALESCE(ac.name, a.asset_type, 'Outros'), COALESCE(ac.color, '#3B82F6'), COALESCE(ac.expected_yield, 8)
+        `, [userId]);
+      }
+
       let estimatedAnnual = 0;
       const breakdown = [];
 
-      for (const cls of classesResult.rows) {
+      // Usar classes se tiver valor, senão usar fallback direto de ativos
+      const rowsToProcess = totalFromClasses > 0 
+        ? classesResult.rows 
+        : assetsDirectResult.rows.map(r => ({
+            name: r.class_name,
+            color: r.color,
+            expected_yield: r.expected_yield,
+            value: r.value
+          }));
+
+      for (const cls of rowsToProcess) {
         const value = parseFloat(cls.value) || 0;
         // Usar expected_yield se existir, senão usar um default baseado no tipo de ativo
         let yieldPercent = parseFloat(cls.expected_yield) || 0;

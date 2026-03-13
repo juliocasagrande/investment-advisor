@@ -302,6 +302,25 @@ export default function Dashboard() {
 
         {macroAnalysis ? (
           <div className="space-y-6">
+            {/* Recommended Class Highlight */}
+            {macroAnalysis.recommendedClass && (
+              <div className="bg-gradient-to-r from-purple-600/20 to-indigo-600/20 border border-purple-500/30 rounded-xl p-4 flex items-start gap-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center">
+                  <Zap className="w-5 h-5 text-purple-400" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-medium text-purple-400 uppercase tracking-wider">Classe Mais Favorecida Agora</span>
+                    <span className={'text-xs px-2 py-0.5 rounded-full font-medium ' + (macroAnalysis.recommendedClass.confidence === 'alta' ? 'bg-emerald-500/20 text-emerald-400' : macroAnalysis.recommendedClass.confidence === 'media' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-500/20 text-slate-400')}>
+                      confiança {macroAnalysis.recommendedClass.confidence}
+                    </span>
+                  </div>
+                  <p className="text-white font-semibold text-lg">{macroAnalysis.recommendedClass.name}</p>
+                  <p className="text-slate-300 text-sm mt-1">{macroAnalysis.recommendedClass.reason}</p>
+                </div>
+              </div>
+            )}
+
             {/* Summary */}
             {macroAnalysis.summary && (
               <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/20 rounded-xl p-4">

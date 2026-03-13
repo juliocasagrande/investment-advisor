@@ -51,15 +51,16 @@ class MacroService {
 
   async generateAnalysis(apiKey) {
     try {
-      const prompt = `Você é um analista financeiro especializado em investimentos. 
-Analise o cenário macroeconômico atual para investidores brasileiros.
+      const currentDate = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+      const prompt = `Você é um analista financeiro especializado em investimentos brasileiros.
+Analise o cenário macroeconômico atual (${currentDate}) para investidores brasileiros.
 
-Retorne APENAS um JSON válido (sem markdown, sem \`\`\`) com esta estrutura exata:
+Retorne APENAS um JSON válido (sem markdown, sem backticks) com esta estrutura exata:
 {
   "scenarios": [
     {
       "title": "Título do Cenário",
-      "description": "Descrição detalhada",
+      "description": "Descrição detalhada do cenário e seu impacto para investidores brasileiros",
       "probability": "alta|media|baixa",
       "benefitedAssets": ["Classe 1", "Classe 2"],
       "riskLevel": "baixo|medio|alto",
@@ -74,14 +75,19 @@ Retorne APENAS um JSON válido (sem markdown, sem \`\`\`) com esta estrutura exa
     "Cripto": 5,
     "Metais": 5
   },
-  "summary": "Resumo do cenário macroeconômico atual",
+  "recommendedClass": {
+    "name": "Nome da classe mais favorecida no cenário atual",
+    "reason": "Motivo objetivo em 1-2 frases por que esta classe está mais favorecida agora",
+    "confidence": "alta|media|baixa"
+  },
+  "summary": "Resumo executivo do cenário macroeconômico atual em 2-3 frases, focando nos pontos mais relevantes para o investidor brasileiro",
   "updatedAt": "${new Date().toISOString()}"
 }
 
-Inclua 3-5 cenários cobrindo: taxa de juros, inflação, câmbio, commodities.
-A soma da alocação sugerida deve ser exatamente 100%.`;
+Inclua 3-5 cenários cobrindo: taxa Selic/juros, inflação (IPCA), câmbio (BRL/USD), commodities e contexto global.
+A soma da suggestedAllocation deve ser exatamente 100%.
+O campo recommendedClass deve indicar claramente qual ÚNICA classe de ativo está mais favorecida pelo cenário macroeconômico atual.`;
 
-      // Usar modelo atualizado - llama-3.3-70b-versatile
       const response = await axios.post(
         'https://api.groq.com/openai/v1/chat/completions',
         {
@@ -89,12 +95,12 @@ A soma da alocação sugerida deve ser exatamente 100%.`;
           messages: [
             { 
               role: 'system', 
-              content: 'Você é um analista financeiro. Responda APENAS com JSON válido, sem markdown ou explicações.' 
+              content: 'Você é um analista financeiro brasileiro sênior. Responda APENAS com JSON válido, sem markdown, sem explicações, sem texto antes ou depois do JSON.' 
             },
             { role: 'user', content: prompt }
           ],
           max_tokens: 2000,
-          temperature: 0.7
+          temperature: 0.5
         },
         {
           headers: {
@@ -114,6 +120,12 @@ A soma da alocação sugerida deve ser exatamente 100%.`;
       // Limpar e parsear JSON
       let cleanContent = content.trim();
       cleanContent = cleanContent.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+      
+      // Extrair JSON se houver texto ao redor
+      const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        cleanContent = jsonMatch[0];
+      }
       
       const analysis = JSON.parse(cleanContent);
       analysis.isDefault = false;
@@ -154,6 +166,11 @@ A soma da alocação sugerida deve ser exatamente 100%.`;
           timeHorizon: "longo"
         }
       ],
+      recommendedClass: {
+        name: "Renda Fixa",
+        reason: "Com a Selic elevada, renda fixa pós-fixada oferece retorno real positivo com baixo risco.",
+        confidence: "alta"
+      },
       suggestedAllocation: {
         "Renda Fixa": 35,
         "Ações BR": 20,
@@ -162,7 +179,7 @@ A soma da alocação sugerida deve ser exatamente 100%.`;
         "Cripto": 5,
         "Metais": 10
       },
-      summary: "Configure sua API key do Groq nas configurações para receber análises macroeconômicas personalizadas com IA.",
+      summary: "Dados padrão baseados no cenário típico brasileiro. Configure sua API key do Groq para análises personalizadas e atualizadas com IA.",
       updatedAt: new Date().toISOString()
     };
   }
