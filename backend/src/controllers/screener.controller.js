@@ -124,14 +124,17 @@ class ScreenerController {
   async fetchBRStocks(list, token, filters) {
     const unique = [...new Set(list)];
     const results = [];
-    const batchSize = 8;
+    const batchSize = 5; // menor batch para não perder dados nos módulos
 
     for (let i = 0; i < unique.length; i += batchSize) {
       const batch = unique.slice(i, i + batchSize).join(',');
       try {
         const response = await axios.get(
-          `https://brapi.dev/api/quote/${batch}?token=${token}&fundamental=true`,
-          { timeout: 20000 }
+          `https://brapi.dev/api/quote/${batch}`,
+          {
+            params: { token, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
+            timeout: 25000
+          }
         );
         if (response.data?.results) {
           for (const stock of response.data.results) {
@@ -267,8 +270,11 @@ class ScreenerController {
           for (const asset of brAssets) {
             try {
               const resp = await axios.get(
-                `https://brapi.dev/api/quote/${asset.ticker}?token=${brapiToken}&fundamental=true`,
-                { timeout: 12000 }
+                `https://brapi.dev/api/quote/${asset.ticker}`,
+                {
+                  params: { token: brapiToken, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
+                  timeout: 15000
+                }
               );
               const stockData = resp.data?.results?.[0];
               if (!stockData) {
@@ -440,8 +446,11 @@ class ScreenerController {
       for (const stock of candidates) {
         try {
           const response = await axios.get(
-            `https://brapi.dev/api/quote/${stock}?token=${token}&fundamental=true`,
-            { timeout: 10000 }
+            `https://brapi.dev/api/quote/${stock}`,
+            {
+              params: { token, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
+              timeout: 15000
+            }
           );
           if (response.data?.results?.[0]) {
             const data = response.data.results[0];
@@ -477,8 +486,11 @@ class ScreenerController {
       if (!token) return res.status(400).json({ error: 'Configure seu token Brapi' });
 
       const response = await axios.get(
-        `https://brapi.dev/api/quote/${ticker}?token=${token}&fundamental=true`,
-        { timeout: 10000 }
+        `https://brapi.dev/api/quote/${ticker}`,
+        {
+          params: { token, modules: 'defaultKeyStatistics,financialData', fundamental: 'true' },
+          timeout: 15000
+        }
       );
       if (!response.data?.results?.[0]) return res.status(404).json({ error: 'Ação não encontrada' });
 
@@ -522,23 +534,41 @@ class ScreenerController {
 
   // Brapi: campos corretos com conversões certas
   extractBRFundamentals(stock) {
+    // Com modules=defaultKeyStatistics,financialData:
+    //   P/L, P/VP, DY, EV/EBITDA → stock.defaultKeyStatistics.*
+    //   ROE, ROA, margens, liquidez, dívida, crescimento → stock.financialData.*
+    //   P/L também está na raiz como stock.priceEarnings (fallback)
+    const ks = stock.defaultKeyStatistics || {};
+    const fd = stock.financialData || {};
+
+    const pct = (v) => (v != null && !isNaN(v)) ? v * 100 : null;
+    const num = (v) => (v != null && !isNaN(v)) ? v : null;
+
     return {
-      pl:               stock.priceEarnings ?? null,
-      pvp:              stock.priceToBook ?? null,
-      psr:              stock.priceToSalesTrailing12Months ?? null,
-      // Brapi retorna dividendYield como decimal (ex: 0.065 = 6.5%) — multiplicar por 100
-      dy:               stock.dividendYield != null ? stock.dividendYield * 100 : null,
-      evEbitda:         stock.enterpriseToEbitda ?? null,
-      // ebitMargins (não ebitdaMargins!) para Margem EBIT
-      margemEbit:       stock.ebitMargins != null ? stock.ebitMargins * 100 : null,
-      margemLiquida:    stock.profitMargins != null ? stock.profitMargins * 100 : null,
-      liquidezCorrente: stock.currentRatio ?? null,
-      // returnOnAssets é usado como proxy de ROIC (Brapi não tem ROIC direto)
-      roic:             stock.returnOnAssets != null ? stock.returnOnAssets * 100 : null,
-      roe:              stock.returnOnEquity != null ? stock.returnOnEquity * 100 : null,
-      // debtToEquity na Brapi já vem em percentual (ex: 150 = 1.5x) — dividir por 100
-      dividaPl:         stock.debtToEquity != null ? stock.debtToEquity / 100 : null,
-      crescReceita:     stock.revenueGrowth != null ? stock.revenueGrowth * 100 : null,
+      // P/L: forwardPE (defaultKeyStatistics) ou priceEarnings (raiz)
+      pl:               num(ks.forwardPE) ?? num(stock.priceEarnings),
+      // P/VP: priceToBook (defaultKeyStatistics)
+      pvp:              num(ks.priceToBook),
+      // PSR: não disponível diretamente — tentativa pela raiz
+      psr:              num(stock.priceToSalesTrailing12Months),
+      // DY: dividendYield em decimal (ex: 0.065 = 6.5%) — multiplicar por 100
+      dy:               ks.dividendYield != null ? pct(ks.dividendYield) : null,
+      // EV/EBITDA: enterpriseToEbitda (defaultKeyStatistics)
+      evEbitda:         num(ks.enterpriseToEbitda),
+      // Margem EBIT (Operacional): operatingMargins (financialData) em decimal
+      margemEbit:       fd.operatingMargins != null ? pct(fd.operatingMargins) : null,
+      // Margem Líquida: profitMargins (financialData) em decimal
+      margemLiquida:    fd.profitMargins != null ? pct(fd.profitMargins) : null,
+      // Liquidez Corrente: currentRatio (financialData)
+      liquidezCorrente: num(fd.currentRatio),
+      // ROIC proxy via returnOnAssets (financialData) em decimal
+      roic:             fd.returnOnAssets != null ? pct(fd.returnOnAssets) : null,
+      // ROE: returnOnEquity (financialData) em decimal
+      roe:              fd.returnOnEquity != null ? pct(fd.returnOnEquity) : null,
+      // Dívida/PL: debtToEquity (financialData) — já vem em percentual (ex: 101.6 = 1.016x)
+      dividaPl:         fd.debtToEquity != null ? fd.debtToEquity / 100 : null,
+      // Crescimento Receita: revenueGrowth (financialData) em decimal
+      crescReceita:     fd.revenueGrowth != null ? pct(fd.revenueGrowth) : null,
     };
   }
 
