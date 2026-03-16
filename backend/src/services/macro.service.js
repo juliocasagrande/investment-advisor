@@ -5,8 +5,15 @@ class MacroService {
   async getOrCreateAnalysis(userId) {
     try {
       const today = new Date().toISOString().split('T')[0];
-      
-      // Verificar se já existe análise de hoje
+
+      // Buscar API key do Groq primeiro
+      const settings = await pool.query(
+        'SELECT groq_api_key FROM user_settings WHERE user_id = $1',
+        [userId]
+      );
+      const apiKey = settings.rows[0]?.groq_api_key || process.env.GROQ_API_KEY;
+
+      // Verificar cache de hoje
       const existing = await pool.query(`
         SELECT * FROM macro_analysis 
         WHERE user_id = $1 AND DATE(created_at) = $2 
@@ -15,27 +22,25 @@ class MacroService {
 
       if (existing.rows.length > 0) {
         try {
-          return JSON.parse(existing.rows[0].analysis_data);
+          const cached = JSON.parse(existing.rows[0].analysis_data);
+          // Se temos Groq key agora mas o cache é isDefault, invalidar e regenerar
+          if (apiKey && cached.isDefault) {
+            await pool.query('DELETE FROM macro_analysis WHERE user_id = $1', [userId]);
+          } else {
+            return cached;
+          }
         } catch {
-          return this.getDefaultAnalysis();
+          // cache corrompido, regenerar
         }
       }
-
-      // Buscar API key do Groq
-      const settings = await pool.query(
-        'SELECT groq_api_key FROM user_settings WHERE user_id = $1',
-        [userId]
-      );
-      
-      const apiKey = settings.rows[0]?.groq_api_key || process.env.GROQ_API_KEY;
 
       if (!apiKey) {
         return this.getDefaultAnalysis();
       }
 
-      // Gerar nova análise
+      // Gerar nova análise com Groq
       const analysis = await this.generateAnalysis(apiKey);
-      
+
       // Salvar no banco
       await pool.query(
         'INSERT INTO macro_analysis (user_id, analysis_data) VALUES ($1, $2)',
