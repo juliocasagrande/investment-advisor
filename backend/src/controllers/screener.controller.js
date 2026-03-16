@@ -247,9 +247,10 @@ class ScreenerController {
         const priceModule = yData.price || {};
         const fundamentals = this.extractYahooFundamentals(yData);
         const score = this.calculateScore(fundamentals, filters) ?? 50;
-        // passFilters = score >= 80: ativo "passou" quando atinge o limiar de compra
-        // Os filtros manuais ainda refinam, mas o score é o critério principal
-        const passFilters = score >= 80 && this.applyFilters(fundamentals, filters);
+        // passFilters = score >= 80: o score combinado É o critério de compra.
+        // applyFilters só é usado para mostrar violations informativas, não para bloquear.
+        const passFilters = score >= 80;
+        const violations = this.getFilterViolations(fundamentals, filters);
         results.push({
           ticker,
           name: priceModule.longName || priceModule.shortName || ticker,
@@ -260,6 +261,7 @@ class ScreenerController {
           ...fundamentals,
           score,
           passFilters,
+          violations,
           recommendation: score >= 80 ? 'COMPRAR' : score >= 60 ? 'MANTER' : 'AVALIAR'
         });
         console.log(`[Search] ${ticker} — score: ${score}, passFilters: ${passFilters}`);

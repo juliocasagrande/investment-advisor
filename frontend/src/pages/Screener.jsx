@@ -8,19 +8,20 @@ import {
 import toast from 'react-hot-toast';
 
 // ─── Filter config ────────────────────────────────────────────────────────────
+// Filtros são opcionais — apenas refinam a exibição. O critério de COMPRAR é score >= 80.
 const DEFAULT_FILTERS = {
-  plMin: 5, plMax: 15,
-  pvpMin: 0.7, pvpMax: 1.8,
-  psrMin: 0.5, psrMax: 2,
-  dyMin: 4, dyMax: null,
-  evEbitdaMin: 3, evEbitdaMax: 8,
-  margemEbitMin: 5, margemEbitMax: null,
-  margemLiquidaMin: 5, margemLiquidaMax: null,
-  liquidezCorrenteMin: 1.5, liquidezCorrenteMax: null,
-  roicMin: 8, roicMax: null,
-  roeMin: 10, roeMax: null,
-  dividaPatrimonioMin: null, dividaPatrimonioMax: 2,
-  crescimentoReceitaMin: 10, crescimentoReceitaMax: null,
+  plMin: null, plMax: null,
+  pvpMin: null, pvpMax: null,
+  psrMin: null, psrMax: null,
+  dyMin: null, dyMax: null,
+  evEbitdaMin: null, evEbitdaMax: null,
+  margemEbitMin: null, margemEbitMax: null,
+  margemLiquidaMin: null, margemLiquidaMax: null,
+  liquidezCorrenteMin: null, liquidezCorrenteMax: null,
+  roicMin: null, roicMax: null,
+  roeMin: null, roeMax: null,
+  dividaPatrimonioMin: null, dividaPatrimonioMax: null,
+  crescimentoReceitaMin: null, crescimentoReceitaMax: null,
 };
 
 const FILTER_CONFIG = [
@@ -39,11 +40,52 @@ const FILTER_CONFIG = [
 ];
 
 const ASSET_CLASSES = [
-  { id: 'stocks_br', label: 'Ações BR',   icon: '🇧🇷', currency: 'BRL', count: 52 },
-  { id: 'fiis',      label: 'FIIs',       icon: '🏢', currency: 'BRL', count: 24 },
-  { id: 'stocks_us', label: 'Ações EUA',  icon: '🇺🇸', currency: 'USD', count: 30 },
-  { id: 'reits',     label: 'REITs',      icon: '🏠', currency: 'USD', count: 20 },
+  { id: 'stocks_br', label: 'Ações BR',   icon: '🇧🇷', currency: 'BRL', count: 118 },
+  { id: 'fiis',      label: 'FIIs',       icon: '🏢', currency: 'BRL', count: 48 },
+  { id: 'stocks_us', label: 'Ações EUA',  icon: '🇺🇸', currency: 'USD', count: 59 },
+  { id: 'reits',     label: 'REITs',      icon: '🏠', currency: 'USD', count: 33 },
 ];
+
+// Mapeamento Yahoo Finance sector → setor em português
+const SECTOR_PT = {
+  'Financial Services':       'Financeiro',
+  'Technology':               'Tecnologia',
+  'Healthcare':               'Saúde',
+  'Communication Services':   'Telecom',
+  'Consumer Defensive':       'Consumo Defensivo',
+  'Consumer Cyclical':        'Consumo Cíclico',
+  'Industrials':              'Indústria',
+  'Basic Materials':          'Materiais Básicos',
+  'Energy':                   'Energia',
+  'Utilities':                'Utilidades',
+  'Real Estate':              'Imobiliário',
+};
+
+// Agrupa lista de ativos por setor, mantendo ordem: COMPRAR primeiro dentro de cada setor
+function groupBySector(stocks) {
+  const groups = {};
+  const noSector = [];
+  for (const s of stocks) {
+    const rawSector = s.sector;
+    const sector = rawSector ? (SECTOR_PT[rawSector] || rawSector) : null;
+    if (sector) {
+      if (!groups[sector]) groups[sector] = [];
+      groups[sector].push({ ...s, sectorPt: sector });
+    } else {
+      noSector.push({ ...s, sectorPt: null });
+    }
+  }
+  // Ordenar setores: primeiro os que têm COMPRAR, depois alfabético
+  const sorted = Object.entries(groups).sort(([a, aStocks], [b, bStocks]) => {
+    const aHasBuy = aStocks.some(s => s.passFilters);
+    const bHasBuy = bStocks.some(s => s.passFilters);
+    if (aHasBuy && !bHasBuy) return -1;
+    if (!aHasBuy && bHasBuy) return 1;
+    return a.localeCompare(b, 'pt-BR');
+  });
+  if (noSector.length > 0) sorted.push(['Outros', noSector]);
+  return sorted; // Array de [sectorName, stocks[]]
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt = (v, d = 2) => v == null ? '—' : Number(v).toFixed(d);
@@ -352,6 +394,48 @@ function StockDetailModal({ stock, onClose }) {
   );
 }
 
+// ─── Stock Card (usado na lista e no agrupamento por setor) ───────────────────
+function StockCard({ stock, currency = 'BRL', onClick }) {
+  return (
+    <div
+      className={`card p-4 cursor-pointer transition-all hover:border-slate-500 ${!stock.passFilters ? 'opacity-60' : ''}`}
+      onClick={onClick}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="font-mono font-bold text-emerald-400">{stock.ticker}</span>
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${actionStyle(stock.recommendation)}`}>
+              {actionLabel(stock.recommendation)}
+            </span>
+            {stock.passFilters && (
+              <span className="text-[10px] text-blue-400 font-medium">✦ Comprar</span>
+            )}
+            {!stock.passFilters && stock.sectorPt && (
+              <span className="text-[10px] text-slate-600">{stock.sectorPt}</span>
+            )}
+            {!stock.passFilters && !stock.sectorPt && stock.sector && (
+              <span className="text-[10px] text-slate-600">{stock.sector}</span>
+            )}
+          </div>
+          <p className="text-xs text-slate-500 truncate">{stock.name}</p>
+        </div>
+        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+          <p className="font-mono font-bold text-white text-sm">{fmtCur(stock.price, currency)}</p>
+          {stock.change != null && (
+            <p className={`text-xs font-mono ${stock.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {fmtPct(stock.change)}
+            </p>
+          )}
+          <div className="w-24"><ScoreBar score={stock.score} /></div>
+          <ChevronRight className="w-4 h-4 text-slate-600 mt-1" />
+        </div>
+      </div>
+      <FundamentalsRow f={stock} />
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function Screener() {
   const [loading, setLoading]               = useState(false);
@@ -367,6 +451,7 @@ export default function Screener() {
   const [suggestions, setSuggestions]       = useState(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [showOnlyPassed, setShowOnlyPassed] = useState(true);
+  const [groupBySectorEnabled, setGroupBySectorEnabled] = useState(false);
 
   useEffect(() => { analyzePositions(); }, []);
 
@@ -420,6 +505,7 @@ export default function Screener() {
     setFilters(prev => ({ ...prev, [key]: val === '' ? null : parseFloat(val) }));
 
   const displayedResults = showOnlyPassed ? results.filter(r => r.passFilters) : results;
+  const sectorGroups = groupBySector(displayedResults);
 
   const getSelectedStockObj = () => {
     const pos = positionAnalysis?.analysis?.find(a => a.ticker === selectedStock);
@@ -711,18 +797,30 @@ export default function Screener() {
             {/* Search controls */}
             <div className="flex gap-2 justify-end flex-wrap">
               {results.length > 0 && (
-                <button
-                  onClick={() => setShowOnlyPassed(!showOnlyPassed)}
-                  className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
-                    showOnlyPassed
-                      ? 'bg-blue-500/20 border-blue-500/40 text-blue-400'
-                      : 'border-slate-700 text-slate-400'
-                  }`}
-                >
-                  {showOnlyPassed
-                    ? `✦ Comprar (${results.filter(r => r.passFilters).length})`
-                    : `Todos (${results.length})`}
-                </button>
+                <>
+                  <button
+                    onClick={() => setShowOnlyPassed(!showOnlyPassed)}
+                    className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
+                      showOnlyPassed
+                        ? 'bg-blue-500/20 border-blue-500/40 text-blue-400'
+                        : 'border-slate-700 text-slate-400'
+                    }`}
+                  >
+                    {showOnlyPassed
+                      ? `✦ Comprar (${results.filter(r => r.passFilters).length})`
+                      : `Todos (${results.length})`}
+                  </button>
+                  <button
+                    onClick={() => setGroupBySectorEnabled(!groupBySectorEnabled)}
+                    className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
+                      groupBySectorEnabled
+                        ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                        : 'border-slate-700 text-slate-400'
+                    }`}
+                  >
+                    {groupBySectorEnabled ? '▤ Por Setor' : '▤ Por Setor'}
+                  </button>
+                </>
               )}
               <button
                 onClick={searchStocks}
@@ -750,57 +848,51 @@ export default function Screener() {
               <div className="space-y-4">
                 {aiAnalysis && <AIAnalysisCard aiAnalysis={aiAnalysis} type="search" />}
 
-                <div className="space-y-2">
-                  {displayedResults.map(stock => (
-                    <div
-                      key={stock.ticker}
-                      className={`card p-4 cursor-pointer transition-all hover:border-slate-500 ${!stock.passFilters ? 'opacity-50' : ''}`}
-                      onClick={() => setSelectedStock(stock.ticker)}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap mb-1">
-                            <span className="font-mono font-bold text-emerald-400">{stock.ticker}</span>
-                            <span className={`text-xs px-2 py-0.5 rounded-full border ${actionStyle(stock.recommendation)}`}>
-                              {actionLabel(stock.recommendation)}
+                {/* Stock card helper */}
+                {groupBySectorEnabled ? (
+                  // ── Agrupado por setor ──
+                  <div className="space-y-6">
+                    {sectorGroups.map(([sector, sectorStocks]) => (
+                      <div key={sector}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{sector}</h3>
+                          <div className="flex-1 h-px bg-slate-700/60" />
+                          <span className="text-[10px] text-slate-600">{sectorStocks.length} ativos</span>
+                          {sectorStocks.some(s => s.passFilters) && (
+                            <span className="text-[10px] text-blue-400 font-medium">
+                              ✦ {sectorStocks.filter(s => s.passFilters).length} comprar
                             </span>
-                            {stock.passFilters && (
-                              <span className="text-[10px] text-emerald-500 flex items-center gap-0.5">
-                                <CheckCircle className="w-3 h-3" /> Passou
-                              </span>
-                            )}
-                            {stock.sector && (
-                              <span className="text-[10px] text-slate-500">{stock.sector}</span>
-                            )}
-                          </div>
-                          <p className="text-xs text-slate-500 truncate">{stock.name}</p>
-                        </div>
-
-                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                          <p className="font-mono font-bold text-white text-sm">
-                            {fmtCur(stock.price, selectedCls?.currency || 'BRL')}
-                          </p>
-                          {stock.change != null && (
-                            <p className={`text-xs font-mono ${stock.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                              {fmtPct(stock.change)}
-                            </p>
                           )}
-                          <div className="w-24"><ScoreBar score={stock.score} /></div>
-                          <ChevronRight className="w-4 h-4 text-slate-600 mt-1" />
+                        </div>
+                        <div className="space-y-2">
+                          {sectorStocks.map(stock => (
+                            <StockCard key={stock.ticker} stock={stock} currency={selectedCls?.currency || 'BRL'} onClick={() => setSelectedStock(stock.ticker)} />
+                          ))}
                         </div>
                       </div>
-                      <FundamentalsRow f={stock} />
-                    </div>
-                  ))}
-
-                  {displayedResults.length === 0 && (
-                    <div className="text-center py-12 text-slate-500">
-                      <Search className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                      <p>Nenhum ativo passou nos filtros</p>
-                      <p className="text-xs mt-1">Tente ajustar os parâmetros</p>
-                    </div>
-                  )}
-                </div>
+                    ))}
+                    {displayedResults.length === 0 && (
+                      <div className="text-center py-12 text-slate-500">
+                        <Search className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                        <p>Nenhum ativo com score ≥ 80 encontrado</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  // ── Lista plana ──
+                  <div className="space-y-2">
+                    {displayedResults.map(stock => (
+                      <StockCard key={stock.ticker} stock={stock} currency={selectedCls?.currency || 'BRL'} onClick={() => setSelectedStock(stock.ticker)} />
+                    ))}
+                    {displayedResults.length === 0 && (
+                      <div className="text-center py-12 text-slate-500">
+                        <Search className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                        <p>Nenhum ativo com score ≥ 80 encontrado</p>
+                        <p className="text-xs mt-1">Clique em "Todos" para ver todos os ativos analisados</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-12">
