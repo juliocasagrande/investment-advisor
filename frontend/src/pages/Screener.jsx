@@ -605,6 +605,11 @@ export default function Screener() {
                               {stock.recommendation.reason}
                             </p>
                           )}
+                          {stock.noFundamentals && stock.recommendation?.reason && (
+                            <p className="text-[10px] text-slate-500 mt-1 italic">
+                              {stock.recommendation.reason}
+                            </p>
+                          )}
                           {stock.violations?.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-1.5">
                               {stock.violations.map((v, vi) => (

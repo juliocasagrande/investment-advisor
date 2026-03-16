@@ -133,9 +133,11 @@ class ScreenerController {
         const response = await axios.get(batchUrl, { timeout: 25000 });
         if (response.data?.results) {
           for (const stock of response.data.results) {
-            const fundamentals = this.extractBRFundamentals(stock);
+            const rawFundamentals = this.extractBRFundamentals(stock);
+            const { _hasAnyData, _hasModuleData, ...fundamentals } = rawFundamentals;
             const passFilters = this.applyFilters(fundamentals, filters);
             const score = this.calculateScore(fundamentals, filters);
+            const effectiveScore = score ?? 50;
             results.push({
               ticker: stock.symbol,
               name: stock.longName || stock.shortName || stock.symbol,
@@ -143,9 +145,9 @@ class ScreenerController {
               change: stock.regularMarketChangePercent,
               market: 'BR',
               ...fundamentals,
-              score,
+              score: effectiveScore,
               passFilters,
-              recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
+              recommendation: effectiveScore >= 70 ? 'COMPRAR' : effectiveScore >= 50 ? 'MANTER' : 'AVALIAR'
             });
           }
         }
@@ -276,13 +278,32 @@ class ScreenerController {
               }
 
               const fundamentals = this.extractBRFundamentals(stockData);
-              const score       = this.calculateScore(fundamentals, filters);
-              const passFilters = this.applyFilters(fundamentals, filters);
-              const violations  = this.getFilterViolations(fundamentals, filters);
-              const action      = (passFilters && score >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
+              const { _hasAnyData, _hasModuleData, ...cleanFundamentals } = fundamentals;
+
+              // Se não chegou nenhum dado fundamentalista (plano sem módulos ou ativo sem dados)
+              if (!_hasAnyData) {
+                const reason = _hasModuleData
+                  ? 'Indicadores não disponíveis para este ativo'
+                  : 'Módulos fundamentalistas não disponíveis no plano Brapi atual';
+                this.pushBasicPosition(analysis, asset, reason);
+                // Ainda conta na posição mas sem score
+                const { currentValue, gainPercent } = this.calcPosition(asset, stockData.regularMarketPrice);
+                analysis[analysis.length - 1].currentPrice = stockData.regularMarketPrice || parseFloat(asset.current_price) || parseFloat(asset.average_price);
+                analysis[analysis.length - 1].currentValue = currentValue;
+                analysis[analysis.length - 1].gainPercent = gainPercent;
+                analysis[analysis.length - 1].name = stockData.longName || stockData.shortName || asset.name || asset.ticker;
+                continue;
+              }
+
+              const score       = this.calculateScore(cleanFundamentals, filters);
+              const passFilters = this.applyFilters(cleanFundamentals, filters);
+              const violations  = this.getFilterViolations(cleanFundamentals, filters);
+              // score null = dados parciais; usar pl como tie-breaker
+              const effectiveScore = score ?? 50;
+              const action      = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
 
               if (action === 'MANTER') manter++; else avaliarTroca++;
-              totalScore += score; scoredCount++;
+              if (score != null) { totalScore += score; scoredCount++; }
 
               const { currentValue, gainPercent } = this.calcPosition(asset, stockData.regularMarketPrice);
 
@@ -296,9 +317,9 @@ class ScreenerController {
                 qualityScore: score, passFilters, violations,
                 recommendation: {
                   action,
-                  reason: this.getRecommendationReason(fundamentals, score, passFilters, violations)
+                  reason: this.getRecommendationReason(cleanFundamentals, effectiveScore, passFilters, violations)
                 },
-                fundamentals,
+                fundamentals: cleanFundamentals,
                 assetClass: asset.class_name,
                 market: 'BR'
               });
@@ -348,10 +369,11 @@ class ScreenerController {
               const score        = this.calculateScore(fundamentals, filters);
               const passFilters  = this.applyFilters(fundamentals, filters);
               const violations   = this.getFilterViolations(fundamentals, filters);
-              const action       = (passFilters && score >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
+              const effectiveScore = score ?? 50;
+              const action       = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
 
               if (action === 'MANTER') manter++; else avaliarTroca++;
-              totalScore += score; scoredCount++;
+              if (score != null) { totalScore += score; scoredCount++; }
 
               const { currentValue, gainPercent } = this.calcPosition(asset, currentPx);
 
@@ -529,11 +551,11 @@ class ScreenerController {
     // Estrutura da resposta Brapi confirmada pela documentação oficial:
     //
     // Raiz: priceEarnings, earningsPerShare, marketCap, regularMarketPrice
-    // financialData: currentRatio, debtToEquity, returnOnAssets, returnOnEquity,
-    //                revenueGrowth, grossMargins, ebitdaMargins, operatingMargins,
-    //                profitMargins, ebitda, totalRevenue, totalDebt
-    // defaultKeyStatistics (se disponível no plano): priceToBook, dividendYield,
-    //                forwardPE, enterpriseToEbitda
+    // financialData (plano gratuito+): currentRatio, debtToEquity, returnOnAssets,
+    //   returnOnEquity, revenueGrowth, grossMargins, ebitdaMargins, operatingMargins,
+    //   profitMargins, ebitda, totalRevenue, totalDebt
+    // defaultKeyStatistics (plano pago): priceToBook, dividendYield, forwardPE,
+    //   enterpriseToEbitda, marketCap
     //
     // IMPORTANTE: debtToEquity vem em escala percentual (ex: 101.6 = 1.016x)
     // IMPORTANTE: margens, ROE, ROA vêm como decimal (ex: 0.279 = 27.9%)
@@ -541,22 +563,22 @@ class ScreenerController {
     const ks = stock.defaultKeyStatistics || {};
     const fd = stock.financialData || {};
 
-    const pct  = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) * 100 : null;
-    const num  = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) : null;
+    const pct = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) * 100 : null;
+    const num = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) : null;
 
-    // P/L: raiz sempre tem priceEarnings; ks.forwardPE se disponível
+    // P/L: raiz sempre tem priceEarnings com fundamental=true; ks.forwardPE se plano pago
     const pl = num(ks.forwardPE) ?? num(stock.priceEarnings);
 
-    // P/VP: vem em defaultKeyStatistics (plano pago) — sem fallback confiável
+    // P/VP: vem em defaultKeyStatistics — plano pago apenas
     const pvp = num(ks.priceToBook);
 
-    // DY: defaultKeyStatistics.dividendYield em decimal
+    // DY: defaultKeyStatistics.dividendYield em decimal — plano pago
     const dy = ks.dividendYield != null ? pct(ks.dividendYield) : null;
 
-    // EV/EBITDA: defaultKeyStatistics
+    // EV/EBITDA: defaultKeyStatistics — plano pago
     const evEbitda = num(ks.enterpriseToEbitda);
 
-    // Todos abaixo vêm de financialData (confirmado na doc):
+    // Campos de financialData — disponíveis no plano gratuito também:
     const margemEbit       = fd.operatingMargins != null ? pct(fd.operatingMargins) : null;
     const margemLiquida    = fd.profitMargins    != null ? pct(fd.profitMargins)    : null;
     const liquidezCorrente = num(fd.currentRatio);
@@ -565,11 +587,21 @@ class ScreenerController {
     // debtToEquity: 101.6 significa 1.016x — dividir por 100
     const dividaPl         = fd.debtToEquity     != null ? parseFloat(fd.debtToEquity) / 100 : null;
     const crescReceita     = fd.revenueGrowth    != null ? pct(fd.revenueGrowth)    : null;
-    // PSR não existe diretamente na Brapi
-    const psr = null;
+    const psr              = null; // PSR não existe diretamente na Brapi
 
-    return { pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida,
-             liquidezCorrente, roic, roe, dividaPl, crescReceita };
+    // Detectar se ao menos algum dado fundamentalista chegou
+    const hasAnyData = [pl, pvp, dy, margemEbit, margemLiquida, liquidezCorrente, roe, roic, dividaPl]
+      .some(v => v != null);
+
+    // Detectar se veio apenas da raiz (plano gratuito sem módulos completos)
+    const hasModuleData = Object.keys(fd).length > 0 || Object.keys(ks).length > 0;
+
+    return {
+      pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida,
+      liquidezCorrente, roic, roe, dividaPl, crescReceita,
+      _hasAnyData: hasAnyData,
+      _hasModuleData: hasModuleData
+    };
   }
 
   // AlphaVantage: campos do OVERVIEW endpoint
@@ -654,6 +686,12 @@ class ScreenerController {
   }
 
   calculateScore(data, filters = {}) {
+    // Se não há nenhum dado, retornar null (sem dados para pontuar)
+    const hasAny = [data.pl, data.pvp, data.dy, data.roe, data.roic,
+                    data.margemLiquida, data.dividaPl, data.crescReceita,
+                    data.liquidezCorrente].some(v => v != null);
+    if (!hasAny) return null;
+
     let score = 50;
     const inRange = (val, min, max) =>
       val != null &&
