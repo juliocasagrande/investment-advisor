@@ -45,7 +45,7 @@ async function getYahooCrumb(force = false) {
  
 // Busca genérica Yahoo — BR usa sufixo .SA, US sem sufixo
 async function yahooGet(symbol) {
-  const modules = 'defaultKeyStatistics,financialData,summaryDetail,price';
+  const modules = 'defaultKeyStatistics,financialData,summaryDetail,price,calendarEvents';
   for (let attempt = 1; attempt <= 2; attempt++) {
     const { cookie, crumb } = await getYahooCrumb(attempt === 2);
     const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=${modules}&crumb=${encodeURIComponent(crumb)}&formatted=false&corsDomain=finance.yahoo.com`;
@@ -508,6 +508,7 @@ class ScreenerController {
     const ks = yData.defaultKeyStatistics || {};
     const fd = yData.financialData        || {};
     const sd = yData.summaryDetail        || {};
+    const ce = yData.calendarEvents       || {};
  
     const n = (v) => {
       if (v == null) return null;
@@ -516,6 +517,17 @@ class ScreenerController {
       return isNaN(f) || !isFinite(f) ? null : f;
     };
     const pct = (v) => { const x = n(v); return x != null ? x * 100 : null; };
+ 
+    // Converte timestamp Unix (segundos) ou objeto { raw } para ISO date string
+    const toDate = (v) => {
+      if (v == null) return null;
+      const raw = typeof v === 'object' ? v.raw : v;
+      if (!raw || isNaN(raw)) return null;
+      // Yahoo retorna timestamps em segundos
+      const ms = raw > 1e10 ? raw : raw * 1000;
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? null : d.toISOString().split('T')[0];
+    };
  
     const pl      = n(sd.trailingPE) ?? n(ks.forwardPE) ?? n(sd.forwardPE);
     const pvp     = n(ks.priceToBook);
@@ -534,7 +546,17 @@ class ScreenerController {
     const dividaPl         = (() => { const v = n(fd.debtToEquity); return v != null ? v / 100 : null; })();
     const crescReceita     = pct(fd.revenueGrowth);
  
-    return { pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida, liquidezCorrente, roic, roe, dividaPl, crescReceita };
+    // Datas de dividendo — calendarEvents
+    // exDividendDate: data ex-dividendo (precisa ter a ação ANTES desta data para receber)
+    // dividendDate:   data de pagamento efetivo
+    const exDividendDate = toDate(ce.exDividendDate) ?? toDate(sd.exDividendDate) ?? toDate(ks.lastDividendDate);
+    const dividendDate   = toDate(ce.dividendDate);
+ 
+    return {
+      pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida,
+      liquidezCorrente, roic, roe, dividaPl, crescReceita,
+      exDividendDate, dividendDate
+    };
   }
  
   // ── Filtros ───────────────────────────────────────────────────────────────

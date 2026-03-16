@@ -136,6 +136,26 @@ const convictionColor = (c) => {
 const getCurrency = (stock) =>
   stock?.market === 'US' ? 'USD' : 'BRL';
 
+// Formata data ISO (YYYY-MM-DD) para DD/MM/YYYY e calcula proximidade
+const fmtDate = (iso) => {
+  if (!iso) return null;
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+};
+
+const getDividendUrgency = (exDateIso) => {
+  if (!exDateIso) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const ex = new Date(exDateIso + 'T00:00:00');
+  const diffDays = Math.ceil((ex - today) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) return { label: 'Ex-div passado', color: 'text-slate-500' };
+  if (diffDays === 0) return { label: 'Ex-div HOJE', color: 'text-red-400 font-bold' };
+  if (diffDays <= 7)  return { label: `Ex-div em ${diffDays}d`, color: 'text-red-400' };
+  if (diffDays <= 30) return { label: `Ex-div em ${diffDays}d`, color: 'text-amber-400' };
+  return { label: `Ex-div em ${diffDays}d`, color: 'text-slate-400' };
+};
+
 // ─── Score Bar ────────────────────────────────────────────────────────────────
 function ScoreBar({ score }) {
   if (score == null) return <span className="text-xs text-slate-600">N/D</span>;
@@ -152,6 +172,7 @@ function ScoreBar({ score }) {
 // ─── Fundamentals Row ─────────────────────────────────────────────────────────
 function FundamentalsRow({ f }) {
   if (!f) return null;
+  const urgency = getDividendUrgency(f.exDividendDate);
   const items = [
     { label: 'P/L',      value: fmt(f.pl, 1) },
     { label: 'P/VP',     value: fmt(f.pvp, 2) },
@@ -165,13 +186,39 @@ function FundamentalsRow({ f }) {
     { label: 'Liq.Cor', value: fmt(f.liquidezCorrente, 2) },
   ];
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 pt-3 border-t border-slate-700/60">
-      {items.map(({ label, value }) => (
-        <div key={label} className="text-center min-w-[44px]">
-          <p className="text-[9px] text-slate-500 uppercase">{label}</p>
-          <p className="text-xs font-mono text-slate-300">{value}</p>
+    <div className="mt-3 pt-3 border-t border-slate-700/60">
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {items.map(({ label, value }) => (
+          <div key={label} className="text-center min-w-[44px]">
+            <p className="text-[9px] text-slate-500 uppercase">{label}</p>
+            <p className="text-xs font-mono text-slate-300">{value}</p>
+          </div>
+        ))}
+      </div>
+      {(f.exDividendDate || f.dividendDate) && (
+        <div className="flex flex-wrap gap-3 mt-2 pt-2 border-t border-slate-700/40">
+          {f.exDividendDate && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] text-slate-500 uppercase">Ex-div</span>
+              <span className={`text-[10px] font-mono ${urgency?.color || 'text-slate-400'}`}>
+                {fmtDate(f.exDividendDate)}
+              </span>
+              {urgency && urgency.label.includes('em') && (
+                <span className={`text-[9px] ${urgency.color}`}>({urgency.label})</span>
+              )}
+              {urgency && urgency.label === 'Ex-div HOJE' && (
+                <span className="text-[9px] text-red-400 font-bold animate-pulse">⚡ HOJE</span>
+              )}
+            </div>
+          )}
+          {f.dividendDate && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] text-slate-500 uppercase">Pagamento</span>
+              <span className="text-[10px] font-mono text-emerald-400">{fmtDate(f.dividendDate)}</span>
+            </div>
+          )}
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -368,6 +415,36 @@ function StockDetailModal({ stock, onClose }) {
               </div>
             ))}
           </div>
+
+          {(f.exDividendDate || f.dividendDate) && (() => {
+            const urgency = getDividendUrgency(f.exDividendDate);
+            return (
+              <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                <p className="text-xs text-blue-400 font-semibold mb-2">📅 Próximo Dividendo</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {f.exDividendDate && (
+                    <div>
+                      <p className="text-[10px] text-slate-500 mb-0.5">Data Ex-Dividendo</p>
+                      <p className={`text-sm font-mono font-bold ${urgency?.color || 'text-slate-300'}`}>
+                        {fmtDate(f.exDividendDate)}
+                      </p>
+                      {urgency && (
+                        <p className={`text-[10px] mt-0.5 ${urgency.color}`}>{urgency.label}</p>
+                      )}
+                      <p className="text-[9px] text-slate-600 mt-1">Compre antes desta data para receber</p>
+                    </div>
+                  )}
+                  {f.dividendDate && (
+                    <div>
+                      <p className="text-[10px] text-slate-500 mb-0.5">Data de Pagamento</p>
+                      <p className="text-sm font-mono font-bold text-emerald-400">{fmtDate(f.dividendDate)}</p>
+                      <p className="text-[9px] text-slate-600 mt-1">Crédito na conta do investidor</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {stock.quantity && (
             <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
