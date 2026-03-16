@@ -132,10 +132,8 @@ function cleanClassName(name) {
     .trim();
 }
 
-function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', disabled = false, useFixed = false }) {
+function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', disabled = false }) {
   const [open, setOpen] = useState(false);
-  const [dropdownStyle, setDropdownStyle] = useState({});
-  const buttonRef = useRef(null);
   const ref = useRef(null);
 
   useEffect(() => {
@@ -144,54 +142,14 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const handleOpen = () => {
-    if (disabled) return;
-    if (!open && useFixed && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      setDropdownStyle({
-        position: 'fixed',
-        top: rect.bottom + 4,
-        left: rect.left,
-        width: rect.width,
-        zIndex: 9999,
-      });
-    }
-    setOpen(!open);
-  };
-
   const selected = options.find(o => String(o.value) === String(value));
-
-  const dropdownContent = (
-    <div
-      style={useFixed ? dropdownStyle : undefined}
-      className={`${useFixed ? '' : 'absolute top-full left-0 right-0 mt-1'} bg-slate-800 border border-slate-600 rounded-xl shadow-2xl overflow-hidden max-h-64 overflow-y-auto z-[9999]`}
-    >
-      {options.map((opt) => (
-        <button
-          key={String(opt.value)}
-          type="button"
-          onClick={() => { onChange(opt.value); setOpen(false); }}
-          className={`w-full flex items-center gap-3 px-4 py-3 text-left text-sm transition-colors ${
-            String(opt.value) === String(value)
-              ? 'bg-emerald-500/20 text-emerald-400'
-              : 'text-slate-300 hover:bg-slate-700 hover:text-white'
-          }`}
-        >
-          {opt.icon && <span className="flex-shrink-0 text-base w-5 text-center">{opt.icon}</span>}
-          <span className="flex-1 truncate">{opt.label}</span>
-          {String(opt.value) === String(value) && <span className="text-emerald-400 text-xs flex-shrink-0">✓</span>}
-        </button>
-      ))}
-    </div>
-  );
 
   return (
     <div ref={ref} className="relative">
       <button
-        ref={buttonRef}
         type="button"
         disabled={disabled}
-        onClick={handleOpen}
+        onClick={() => !disabled && setOpen(!open)}
         className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border text-left transition-all ${
           disabled
             ? 'bg-slate-800/40 border-slate-700 text-slate-500 cursor-not-allowed'
@@ -201,7 +159,6 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
         }`}
       >
         <span className="flex items-center gap-2 min-w-0 flex-1">
-          {selected?.icon && <span className="flex-shrink-0 text-base">{selected.icon}</span>}
           <span className={`truncate ${selected ? 'text-white' : 'text-slate-500'}`}>
             {selected ? selected.label : placeholder}
           </span>
@@ -209,7 +166,25 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
         <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform flex-shrink-0 ml-2 ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      {open && dropdownContent}
+      {open && (
+        <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl overflow-hidden max-h-56 overflow-y-auto" style={{ zIndex: 99999 }}>
+          {options.map((opt) => (
+            <button
+              key={String(opt.value)}
+              type="button"
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 text-left text-sm transition-colors ${
+                String(opt.value) === String(value)
+                  ? 'bg-emerald-500/20 text-emerald-400'
+                  : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              <span className="flex-1">{opt.label}</span>
+              {String(opt.value) === String(value) && <span className="text-emerald-400 text-xs flex-shrink-0">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -515,7 +490,7 @@ export default function Assets() {
       {/* Modal Novo/Editar */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl shadow-2xl">
+          <div className="bg-slate-900 border border-slate-700 p-6 w-full max-w-lg rounded-2xl shadow-2xl" style={{ maxHeight: '85vh', overflowY: 'auto' }}>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold text-white">{editingAsset ? 'Editar Ativo' : 'Novo Ativo'}</h2>
               <button onClick={() => { setShowModal(false); resetForm(); }} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"><X className="w-5 h-5" /></button>
@@ -523,7 +498,7 @@ export default function Assets() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm text-slate-400 mb-2">Classe *</label>
-                <StyledSelect value={formData.assetClassId || ''} onChange={(v) => handleClassSelect(v)} options={classModalOptions} placeholder="Selecione a classe..." disabled={!!editingAsset} useFixed />
+                <StyledSelect value={formData.assetClassId || ''} onChange={(v) => handleClassSelect(v)} options={classModalOptions} placeholder="Selecione a classe..." disabled={!!editingAsset} />
               </div>
               {selectedCategory && (
                 <>

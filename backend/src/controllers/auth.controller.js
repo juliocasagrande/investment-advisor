@@ -49,7 +49,8 @@ class AuthController {
         { name: 'Ações BR Dividendos', target: 15, color: '#8B5CF6', yield: 8 },
         { name: 'REITs EUA', target: 15, color: '#F59E0B', yield: 5.5 },
         { name: 'Ações EUA', target: 10, color: '#EC4899', yield: 2 },
-        { name: 'Metais Preciosos', target: 10, color: '#EAB308', yield: 0 }
+        { name: 'Metais Preciosos', target: 5, color: '#EAB308', yield: 0 },
+        { name: 'Criptomoedas', target: 5, color: '#F97316', yield: 0 }
       ];
 
       for (const cls of defaultClasses) {
