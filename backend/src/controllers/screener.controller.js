@@ -1,6 +1,3 @@
-r · JS
-Copiar
-
 const pool = require('../config/database');
 const axios = require('axios'); // mantido apenas para Groq (POST)
  
