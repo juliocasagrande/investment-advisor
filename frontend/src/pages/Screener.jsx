@@ -992,7 +992,11 @@ export default function Screener() {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h2 className="text-lg font-bold text-white">Sugestões de Troca</h2>
-                  {selectedStock && <p className="text-xs text-slate-400">Para substituir {selectedStock}</p>}
+                  {selectedStock && (
+                    <p className="text-xs text-slate-400">
+                      Melhores candidatos para substituir <span className="text-emerald-400 font-mono">{selectedStock}</span>
+                    </p>
+                  )}
                 </div>
                 <button
                   onClick={() => { setSuggestions(null); setSelectedStock(null); }}
@@ -1003,27 +1007,42 @@ export default function Screener() {
               </div>
 
               {loadingSuggestions ? (
-                <div className="flex items-center justify-center py-8"><div className="loader" /></div>
+                <div className="flex flex-col items-center justify-center py-8 gap-2">
+                  <div className="loader" />
+                  <p className="text-xs text-slate-500">Analisando candidatos...</p>
+                </div>
               ) : suggestions?.suggestions?.length > 0 ? (
                 <div className="space-y-3">
-                  {suggestions.suggestions.map((stock) => (
-                    <div key={stock.ticker} className="p-3 bg-slate-800/50 rounded-xl">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
+                  {suggestions.suggestions.map((stock, idx) => (
+                    <div key={stock.ticker} className={`p-3 rounded-xl border ${
+                      stock.recommendation === 'COMPRAR'
+                        ? 'bg-blue-500/10 border-blue-500/20'
+                        : 'bg-slate-800/50 border-slate-700/50'
+                    }`}>
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] text-slate-500 font-mono">#{idx + 1}</span>
                           <span className="font-mono font-bold text-emerald-400">{stock.ticker}</span>
-                          <span className={`text-sm font-bold ${scoreColor(stock.score)}`}>{stock.score}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full border ${actionStyle(stock.recommendation)}`}>
+                            {actionLabel(stock.recommendation)}
+                          </span>
+                          {stock.sector && (
+                            <span className="text-[10px] text-slate-500">{stock.sector}</span>
+                          )}
                         </div>
-                        <span className="font-mono text-white text-sm">{fmtCur(stock.price)}</span>
+                        <span className="font-mono text-white text-sm flex-shrink-0">{fmtCur(stock.price)}</span>
                       </div>
                       <p className="text-xs text-slate-400 mb-2">{stock.name}</p>
+                      <div className="mb-2"><ScoreBar score={stock.score} /></div>
                       <FundamentalsRow f={stock} />
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-center text-slate-500 py-6 text-sm">
-                  Nenhuma ação com score melhor encontrada nos filtros atuais
-                </p>
+                <div className="text-center py-6">
+                  <p className="text-slate-500 text-sm">Nenhum candidato com score ≥ 60 encontrado</p>
+                  <p className="text-xs text-slate-600 mt-1">Tente novamente mais tarde</p>
+                </div>
               )}
             </div>
           </div>

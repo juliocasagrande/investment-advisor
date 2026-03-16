@@ -487,14 +487,14 @@ class ScreenerController {
       let aiAnalysis = null;
       const scoredPositions = analysis.filter(a => !a.noFundamentals && a.qualityScore != null);
       if (groqKey && scoredPositions.length > 0) {
-        try { aiAnalysis = await this.getAIPortfolioAnalysis(groqKey, scoredPositions, filters); }
+        try { aiAnalysis = await this.getAIPortfolioAnalysis(groqKey, scoredPositions, violationFilters); }
         catch (e) { console.error('Groq portfolio error:', e.message); }
       }
 
       return res.json({
         analysis,
         summary: { manter, avaliarTroca, totalPositions: analysis.length, avgQualityScore: avgScore },
-        aiAnalysis, filtersApplied: filters
+        aiAnalysis, filtersApplied: violationFilters
       });
     } catch (error) {
       console.error('Erro analyzePositions:', error);
@@ -505,23 +505,38 @@ class ScreenerController {
   // ── Sugestões de troca ────────────────────────────────────────────────────
   async getSuggestions(req, res) {
     try {
-      const { ticker, filters = {} } = req.body;
-      const candidates = STOCKS_BR.filter(s => s !== ticker).slice(0, 20);
+      const { ticker } = req.body;
+      // Detectar se é ação BR ou US
+      const isBR = /^[A-Z]{3,6}\d{1,2}$/.test(ticker);
+      const candidateList = isBR
+        ? STOCKS_BR.filter(s => s !== ticker)
+        : STOCKS_US.filter(s => s !== ticker);
+      const candidates = candidateList.slice(0, 25);
       const suggestions = [];
+
       for (const stock of candidates) {
         try {
-          const yData = await yahooGetBR(stock);
+          const yData = isBR ? await yahooGetBR(stock) : await yahooGetUS(stock);
           const priceModule = yData.price || {};
           const fundamentals = this.extractYahooFundamentals(yData);
-          const score = this.calculateScore(fundamentals, filters) ?? 50;
-          if (this.applyFilters(fundamentals, filters)) {
-            suggestions.push({ ticker: stock, name: priceModule.longName || stock, price: priceModule.regularMarketPrice ?? null, ...fundamentals, score });
+          // Score com filtros vazios — mesmo critério da busca e análise
+          const score = this.calculateScore(fundamentals, {}) ?? 50;
+          if (score >= 60) { // mostrar candidatos razoáveis ou melhores
+            suggestions.push({
+              ticker: stock,
+              name: priceModule.longName || priceModule.shortName || stock,
+              price: priceModule.regularMarketPrice ?? null,
+              sector: isBR ? (SECTOR_MAP[stock] || null) : (US_SECTOR_MAP[stock] || null),
+              ...fundamentals,
+              score,
+              recommendation: score >= 80 ? 'COMPRAR' : 'MANTER',
+            });
           }
         } catch (e) { }
         await new Promise(r => setTimeout(r, 300));
       }
       suggestions.sort((a, b) => b.score - a.score);
-      return res.json({ suggestions: suggestions.slice(0, 5) });
+      return res.json({ suggestions: suggestions.slice(0, 6) });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao buscar sugestões' });
     }
