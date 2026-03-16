@@ -520,7 +520,7 @@ export default function Screener() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-xs text-slate-500">
-                Análise fundamentalista de todas as suas posições (ações BR via Brapi · EUA via AlphaVantage)
+                Análise fundamentalista de todas as suas posições (ações BR via Yahoo Finance · EUA via AlphaVantage)
               </p>
               <button
                 onClick={analyzePositions}
@@ -810,7 +810,7 @@ export default function Screener() {
                 <p className="text-xs text-slate-600 mt-1">
                   {assetClass === 'stocks_us' || assetClass === 'reits'
                     ? 'Requer chave AlphaVantage nas Configurações'
-                    : 'Requer token Brapi nas Configurações'}
+                    : 'Dados via Yahoo Finance — sem necessidade de configuração'}
                 </p>
               </div>
             )}

@@ -1,48 +1,96 @@
 const pool = require('../config/database');
 const axios = require('axios'); // mantido apenas para Groq (POST)
-
-// ── Helper HTTP genérico ───────────────────────────────────────────────────────
-// Usa fetch nativo (Node 18+) para preservar a URL exatamente como montada,
-// evitando o bug do axios 1.x que re-codifica vírgulas (%2C).
-async function httpGet(url, timeoutMs = 15000, extraHeaders = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        ...extraHeaders
-      }
-    });
-    if (!res.ok) {
-      const err = new Error(`HTTP ${res.status}`);
-      err.status = res.status;
-      throw err;
-    }
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
+ 
+// ── Yahoo Finance — Cookie + Crumb ────────────────────────────────────────────
+// O Yahoo Finance exige um fluxo de autenticação de dois passos:
+// 1. GET https://fc.yahoo.com  → recebe cookie de sessão
+// 2. GET https://query2.finance.yahoo.com/v1/test/getcrumb (com o cookie) → recebe o crumb
+// 3. Todas as chamadas de dados usam o cookie + &crumb=<valor>
+//
+// O cookie/crumb é cacheado em memória e renovado quando expirar ou der 401.
+ 
+let _yahooCookie = null;
+let _yahooCrumb  = null;
+let _yahooLastFetch = 0;
+const CRUMB_TTL = 55 * 60 * 1000; // renovar a cada 55 minutos
+ 
+const YAHOO_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Origin': 'https://finance.yahoo.com',
+  'Referer': 'https://finance.yahoo.com/',
+};
+ 
+async function getYahooCrumb(force = false) {
+  const now = Date.now();
+  if (!force && _yahooCrumb && (now - _yahooLastFetch) < CRUMB_TTL) {
+    return { cookie: _yahooCookie, crumb: _yahooCrumb };
   }
+ 
+  // Passo 1: obter cookie
+  const cookieRes = await fetch('https://fc.yahoo.com', {
+    headers: YAHOO_HEADERS,
+    redirect: 'follow',
+  });
+  const rawCookies = cookieRes.headers.getSetCookie?.() || [];
+  const cookieStr = rawCookies.map(c => c.split(';')[0]).join('; ');
+ 
+  // Passo 2: obter crumb usando o cookie
+  const crumbRes = await fetch('https://query2.finance.yahoo.com/v1/test/getcrumb', {
+    headers: { ...YAHOO_HEADERS, 'Cookie': cookieStr },
+  });
+  const crumbText = await crumbRes.text();
+  const crumb = crumbText.trim();
+ 
+  if (!crumb || crumb.includes('<html>') || crumb.includes('Too Many')) {
+    throw new Error(`Falha ao obter crumb do Yahoo Finance: ${crumb.substring(0, 80)}`);
+  }
+ 
+  _yahooCookie = cookieStr;
+  _yahooCrumb  = crumb;
+  _yahooLastFetch = now;
+ 
+  console.log('[Yahoo] Cookie/crumb renovados. Crumb:', crumb.substring(0, 15) + '...');
+  return { cookie: cookieStr, crumb };
 }
-
-// ── Yahoo Finance — buscar fundamentals de ação BR ────────────────────────────
-// Ações BR no Yahoo usam sufixo .SA (ex: MDNE3 → MDNE3.SA)
-// Endpoint v10/quoteSummary retorna defaultKeyStatistics + financialData gratuitamente
+ 
 async function yahooGetBR(ticker) {
   const symbol = ticker.endsWith('.SA') ? ticker : `${ticker}.SA`;
   const modules = 'defaultKeyStatistics,financialData,summaryDetail,price';
-  const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=${modules}`;
-
-  console.log(`[Yahoo] Buscando ${symbol}`);
-  const data = await httpGet(url, 12000);
-
-  const result = data?.quoteSummary?.result?.[0];
-  if (!result) throw new Error(`Sem dados para ${ticker} no Yahoo Finance`);
-  return result;
+ 
+  // Tentar com crumb cacheado; se 401, renovar e tentar uma vez mais
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const { cookie, crumb } = await getYahooCrumb(attempt === 2);
+    const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=${modules}&crumb=${encodeURIComponent(crumb)}&formatted=false&corsDomain=finance.yahoo.com`;
+ 
+    console.log(`[Yahoo] Buscando ${symbol} (tentativa ${attempt})`);
+    const res = await fetch(url, {
+      headers: { ...YAHOO_HEADERS, 'Cookie': cookie },
+    });
+ 
+    if (res.status === 401 && attempt === 1) {
+      console.warn('[Yahoo] 401 — renovando crumb...');
+      continue;
+    }
+ 
+    if (!res.ok) {
+      const err = new Error(`Yahoo Finance HTTP ${res.status} para ${ticker}`);
+      err.status = res.status;
+      throw err;
+    }
+ 
+    const data = await res.json();
+    const error = data?.quoteSummary?.error;
+    if (error) throw new Error(`Yahoo Finance: ${error.description || error.code}`);
+ 
+    const result = data?.quoteSummary?.result?.[0];
+    if (!result) throw new Error(`Sem dados para ${ticker} no Yahoo Finance`);
+    return result;
+  }
 }
-
+ 
 // ── Auto-healing ──────────────────────────────────────────────────────────────
 async function ensureColumns() {
   const stmts = [
@@ -184,80 +232,62 @@ async function getUserSettings(userId) {
     return {};
   }
 }
-
+ 
 const ANALYZABLE_CATEGORIES = new Set(['stocks_br', 'fiis', 'etfs', 'acoes_br']);
 const US_CATEGORIES = new Set(['stocks_us', 'reits']);
-
+ 
 class ScreenerController {
-
-  // ── Buscar ativos com filtros ─────────────────────────────────────────────
+ 
   async search(req, res) {
     try {
       const userId = req.userId;
       const { filters = {}, assetClass = 'stocks_br' } = req.body;
       const settings = await getUserSettings(userId);
       const groqKey = settings.groq_api_key || process.env.GROQ_API_KEY;
-
       let stocks = [];
-
+ 
       if (assetClass === 'stocks_us' || assetClass === 'reits') {
         const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
-        if (!alphaKey) {
-          return res.status(400).json({
-            error: 'Configure sua chave AlphaVantage nas configurações para buscar ações dos EUA.'
-          });
-        }
-        const list = assetClass === 'reits' ? REITS : STOCKS_US;
-        stocks = await this.fetchUSStocks(list, alphaKey, filters);
+        if (!alphaKey) return res.status(400).json({ error: 'Configure sua chave AlphaVantage nas configurações.' });
+        stocks = await this.fetchUSStocks(assetClass === 'reits' ? REITS : STOCKS_US, alphaKey, filters);
       } else {
-        // Ações BR / FIIs via Yahoo Finance (gratuito, sem token)
-        const list = assetClass === 'fiis' ? FIIS : STOCKS_BR;
-        stocks = await this.fetchBRStocks(list, filters);
+        stocks = await this.fetchBRStocks(assetClass === 'fiis' ? FIIS : STOCKS_BR, filters);
       }
-
+ 
       stocks.sort((a, b) => (b.score || 0) - (a.score || 0));
       const passed = stocks.filter(r => r.passFilters);
-
+ 
       let aiAnalysis = null;
       if (groqKey && passed.length > 0) {
-        try {
-          aiAnalysis = await this.getAIRecommendation(groqKey, passed.slice(0, 10), filters);
-        } catch (e) {
-          console.error('Groq error:', e.message);
-        }
+        try { aiAnalysis = await this.getAIRecommendation(groqKey, passed.slice(0, 10), filters); }
+        catch (e) { console.error('Groq error:', e.message); }
       }
-
       return res.json({ total: stocks.length, passed: passed.length, stocks, aiAnalysis });
     } catch (error) {
-      console.error('Erro no screener search:', error);
+      console.error('Erro screener search:', error);
       return res.status(500).json({ error: 'Erro ao buscar ações: ' + error.message });
     }
   }
-
-  // ── Buscar ações BR/FII via Yahoo Finance ─────────────────────────────────
+ 
   async fetchBRStocks(list, filters) {
-    const unique = [...new Set(list)];
     const results = [];
-
-    for (const ticker of unique) {
+    for (const ticker of [...new Set(list)]) {
       try {
         const yData = await yahooGetBR(ticker);
         const priceModule = yData.price || {};
         const fundamentals = this.extractYahooFundamentals(yData);
         const passFilters = this.applyFilters(fundamentals, filters);
-        const score = this.calculateScore(fundamentals, filters);
-        const effectiveScore = score ?? 50;
-
+        const score = this.calculateScore(fundamentals, filters) ?? 50;
         results.push({
           ticker,
           name: priceModule.longName || priceModule.shortName || ticker,
-          price: priceModule.regularMarketPrice?.raw ?? null,
-          change: priceModule.regularMarketChangePercent?.raw ?? null,
+          price: priceModule.regularMarketPrice ?? null,
+          change: priceModule.regularMarketChangePercent ?? null,
           market: 'BR',
           ...fundamentals,
-          score: effectiveScore,
+          score,
           passFilters,
-          recommendation: effectiveScore >= 70 ? 'COMPRAR' : effectiveScore >= 50 ? 'MANTER' : 'AVALIAR'
+          recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
         });
       } catch (e) {
         console.error(`Erro Yahoo BR ${ticker}:`, e.message);
@@ -266,68 +296,41 @@ class ScreenerController {
     }
     return results;
   }
-
-  // ── Buscar ações US via AlphaVantage ──────────────────────────────────────
+ 
   async fetchUSStocks(list, alphaKey, filters) {
     const results = [];
     for (const ticker of list) {
       try {
         const [quoteRes, overviewRes] = await Promise.allSettled([
-          axios.get('https://www.alphavantage.co/query', {
-            params: { function: 'GLOBAL_QUOTE', symbol: ticker, apikey: alphaKey },
-            timeout: 10000
-          }),
-          axios.get('https://www.alphavantage.co/query', {
-            params: { function: 'OVERVIEW', symbol: ticker, apikey: alphaKey },
-            timeout: 10000
-          })
+          axios.get('https://www.alphavantage.co/query', { params: { function: 'GLOBAL_QUOTE', symbol: ticker, apikey: alphaKey }, timeout: 10000 }),
+          axios.get('https://www.alphavantage.co/query', { params: { function: 'OVERVIEW', symbol: ticker, apikey: alphaKey }, timeout: 10000 })
         ]);
-
         const quote = quoteRes.status === 'fulfilled' ? quoteRes.value.data?.['Global Quote'] : null;
         const overview = overviewRes.status === 'fulfilled' ? overviewRes.value.data : null;
-
         if (!quote?.['05. price'] && !overview?.Symbol) continue;
-
         const fundamentals = this.extractUSFundamentals(quote, overview);
         const passFilters = this.applyFilters(fundamentals, filters);
-        const score = this.calculateScore(fundamentals, filters);
-        const effectiveScore = score ?? 50;
-
+        const score = this.calculateScore(fundamentals, filters) ?? 50;
         results.push({
-          ticker,
-          name: overview?.Name || ticker,
+          ticker, name: overview?.Name || ticker,
           price: parseFloat(quote?.['05. price'] || 0),
           change: parseFloat(quote?.['10. change percent']?.replace('%', '') || 0),
-          market: 'US',
-          sector: overview?.Sector,
-          ...fundamentals,
-          score: effectiveScore,
-          passFilters,
-          recommendation: effectiveScore >= 70 ? 'COMPRAR' : effectiveScore >= 50 ? 'MANTER' : 'AVALIAR'
+          market: 'US', sector: overview?.Sector, ...fundamentals, score, passFilters,
+          recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
         });
-      } catch (e) {
-        console.error(`Erro US ${ticker}:`, e.message);
-      }
+      } catch (e) { console.error(`Erro US ${ticker}:`, e.message); }
       await new Promise(r => setTimeout(r, 13000));
     }
     return results;
   }
-
-  // ── Analisar posições do usuário ──────────────────────────────────────────
+ 
   async analyzePositions(req, res) {
     try {
       const userId = req.userId;
       const filters = req.body?.filters && Object.keys(req.body.filters).length > 0
         ? req.body.filters
-        : {
-            plMin: 5,      plMax: 15,
-            pvpMin: 0.7,   pvpMax: 1.8,
-            dyMin: 4,
-            roicMin: 8,
-            roeMin: 10,
-            dividaPatrimonioMax: 2,
-          };
-
+        : { plMin: 5, plMax: 15, pvpMin: 0.7, pvpMax: 1.8, dyMin: 4, roicMin: 8, roeMin: 10, dividaPatrimonioMax: 2 };
+ 
       const assetsResult = await pool.query(`
         SELECT a.*, ac.category as class_category, ac.name as class_name
         FROM assets a
@@ -335,222 +338,171 @@ class ScreenerController {
         WHERE a.user_id = $1 AND a.quantity > 0
         ORDER BY (a.quantity * COALESCE(a.current_price, a.average_price)) DESC
       `, [userId]);
-
+ 
       if (assetsResult.rows.length === 0) {
-        return res.json({
-          analysis: [],
-          summary: { manter: 0, avaliarTroca: 0, totalPositions: 0, avgQualityScore: 0 },
-          aiAnalysis: null
-        });
+        return res.json({ analysis: [], summary: { manter: 0, avaliarTroca: 0, totalPositions: 0, avgQualityScore: 0 }, aiAnalysis: null });
       }
-
+ 
       const settings = await getUserSettings(userId);
       const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
       const groqKey  = settings.groq_api_key || process.env.GROQ_API_KEY;
-
+ 
       const isBRAnalyzable = (a) =>
-        ANALYZABLE_CATEGORIES.has(a.class_category) ||
-        /^[A-Z]{3,6}\d{1,2}$/.test(a.ticker);
-
+        ANALYZABLE_CATEGORIES.has(a.class_category) || /^[A-Z]{3,6}\d{1,2}$/.test(a.ticker);
       const isUSAnalyzable = (a) =>
-        US_CATEGORIES.has(a.class_category) ||
-        /^[A-Z]{1,5}(-[A-Z])?$/.test(a.ticker);
-
+        US_CATEGORIES.has(a.class_category) || /^[A-Z]{1,5}(-[A-Z])?$/.test(a.ticker);
+ 
       const brAssets = assetsResult.rows.filter(isBRAnalyzable);
       const usAssets = assetsResult.rows.filter(a => !isBRAnalyzable(a) && isUSAnalyzable(a));
       const other    = assetsResult.rows.filter(a => !isBRAnalyzable(a) && !isUSAnalyzable(a));
-
+ 
       const analysis = [];
       let manter = 0, avaliarTroca = 0, totalScore = 0, scoredCount = 0;
-
+ 
       // ── Análise BR via Yahoo Finance ──────────────────────────────────────
       for (const asset of brAssets) {
         try {
           console.log(`[Screener] Buscando ${asset.ticker} via Yahoo Finance`);
           const yData = await yahooGetBR(asset.ticker);
-
           const priceModule = yData.price || {};
-          const currentPrice = priceModule.regularMarketPrice?.raw
+ 
+          // Yahoo retorna os campos de price diretamente como número (formatted=false)
+          const currentPrice = priceModule.regularMarketPrice
             ?? parseFloat(asset.current_price)
             ?? parseFloat(asset.average_price);
           const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;
-
+ 
           const fundamentals = this.extractYahooFundamentals(yData);
           const hasAnyData = Object.values(fundamentals).some(v => v != null);
-
+ 
           if (!hasAnyData) {
             this.pushBasicPosition(analysis, asset, 'Indicadores não disponíveis no Yahoo Finance para este ativo');
-            analysis[analysis.length - 1].currentPrice = currentPrice;
-            analysis[analysis.length - 1].name = name;
-            const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
-            analysis[analysis.length - 1].currentValue = currentValue;
-            analysis[analysis.length - 1].gainPercent = gainPercent;
+            const last = analysis[analysis.length - 1];
+            last.currentPrice = currentPrice;
+            last.name = name;
+            Object.assign(last, this.calcPosition(asset, currentPrice));
             continue;
           }
-
+ 
           const score        = this.calculateScore(fundamentals, filters);
           const passFilters  = this.applyFilters(fundamentals, filters);
           const violations   = this.getFilterViolations(fundamentals, filters);
           const effectiveScore = score ?? 50;
           const action       = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
-
+ 
           if (action === 'MANTER') manter++; else avaliarTroca++;
           if (score != null) { totalScore += score; scoredCount++; }
-
+ 
           const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
-
           analysis.push({
-            ticker: asset.ticker,
-            name,
+            ticker: asset.ticker, name,
             quantity: asset.quantity,
             averagePrice: asset.average_price,
-            currentPrice,
-            currentValue, gainPercent,
-            qualityScore: score,
-            passFilters, violations,
-            recommendation: {
-              action,
-              reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations)
-            },
+            currentPrice, currentValue, gainPercent,
+            qualityScore: score, passFilters, violations,
+            recommendation: { action, reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations) },
             fundamentals,
             assetClass: asset.class_name,
             market: 'BR'
           });
-
           console.log(`[Screener] ${asset.ticker} — score: ${score}, action: ${action}`);
         } catch (e) {
-          console.error(`[Screener] ERRO ao buscar ${asset.ticker}:`, e.message);
+          console.error(`[Screener] ERRO ${asset.ticker}:`, e.message);
           const status = e.status;
-          const errMsg = status === 404
-            ? 'Ativo não encontrado no Yahoo Finance'
-            : status === 429
-            ? 'Rate limit do Yahoo Finance — tente novamente em instantes'
-            : `Erro ao buscar dados (${e.message})`;
+          const errMsg = status === 404 ? 'Ativo não encontrado no Yahoo Finance'
+                       : status === 429 ? 'Rate limit do Yahoo Finance — tente novamente em instantes'
+                       : `Erro ao buscar dados (${e.message})`;
           this.pushBasicPosition(analysis, asset, errMsg);
         }
         await new Promise(r => setTimeout(r, 400));
       }
-
+ 
       // ── Análise EUA via AlphaVantage ──────────────────────────────────────
       if (usAssets.length > 0) {
         if (!alphaKey) {
-          usAssets.forEach(a => this.pushBasicPosition(analysis, a,
-            'Configure AlphaVantage nas Configurações para analisar ações dos EUA'));
+          usAssets.forEach(a => this.pushBasicPosition(analysis, a, 'Configure AlphaVantage nas Configurações para analisar ações dos EUA'));
         } else {
           for (const asset of usAssets) {
             try {
               const [quoteRes, overviewRes] = await Promise.allSettled([
-                axios.get('https://www.alphavantage.co/query', {
-                  params: { function: 'GLOBAL_QUOTE', symbol: asset.ticker, apikey: alphaKey },
-                  timeout: 10000
-                }),
-                axios.get('https://www.alphavantage.co/query', {
-                  params: { function: 'OVERVIEW', symbol: asset.ticker, apikey: alphaKey },
-                  timeout: 10000
-                })
+                axios.get('https://www.alphavantage.co/query', { params: { function: 'GLOBAL_QUOTE', symbol: asset.ticker, apikey: alphaKey }, timeout: 10000 }),
+                axios.get('https://www.alphavantage.co/query', { params: { function: 'OVERVIEW', symbol: asset.ticker, apikey: alphaKey }, timeout: 10000 })
               ]);
-
               const quote    = quoteRes.status === 'fulfilled' ? quoteRes.value.data?.['Global Quote'] : null;
               const overview = overviewRes.status === 'fulfilled' ? overviewRes.value.data : null;
-
-              if (!quote?.['05. price'] && !overview?.Symbol) {
-                this.pushBasicPosition(analysis, asset, 'Dados não disponíveis na AlphaVantage');
-                continue;
-              }
-
-              const currentPx    = parseFloat(quote?.['05. price'] || asset.current_price || asset.average_price);
+              if (!quote?.['05. price'] && !overview?.Symbol) { this.pushBasicPosition(analysis, asset, 'Dados não disponíveis na AlphaVantage'); continue; }
+              const currentPx = parseFloat(quote?.['05. price'] || asset.current_price || asset.average_price);
               const fundamentals = this.extractUSFundamentals(quote, overview);
-              const score        = this.calculateScore(fundamentals, filters);
-              const passFilters  = this.applyFilters(fundamentals, filters);
-              const violations   = this.getFilterViolations(fundamentals, filters);
+              const score = this.calculateScore(fundamentals, filters);
+              const passFilters = this.applyFilters(fundamentals, filters);
+              const violations  = this.getFilterViolations(fundamentals, filters);
               const effectiveScore = score ?? 50;
-              const action       = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
-
+              const action = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
               if (action === 'MANTER') manter++; else avaliarTroca++;
               if (score != null) { totalScore += score; scoredCount++; }
-
               const { currentValue, gainPercent } = this.calcPosition(asset, currentPx);
-
               analysis.push({
-                ticker: asset.ticker,
-                name: overview?.Name || asset.name || asset.ticker,
-                quantity: asset.quantity,
-                averagePrice: asset.average_price,
-                currentPrice: currentPx,
-                currentValue, gainPercent,
+                ticker: asset.ticker, name: overview?.Name || asset.name || asset.ticker,
+                quantity: asset.quantity, averagePrice: asset.average_price,
+                currentPrice: currentPx, currentValue, gainPercent,
                 qualityScore: score, passFilters, violations,
-                recommendation: {
-                  action,
-                  reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations)
-                },
-                fundamentals,
-                assetClass: asset.class_name,
-                market: 'US',
-                sector: overview?.Sector
+                recommendation: { action, reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations) },
+                fundamentals, assetClass: asset.class_name, market: 'US', sector: overview?.Sector
               });
             } catch (e) {
-              console.error(`Erro ao buscar US ${asset.ticker}:`, e.message);
+              console.error(`Erro US ${asset.ticker}:`, e.message);
               this.pushBasicPosition(analysis, asset, 'Erro ao buscar dados na AlphaVantage');
             }
             await new Promise(r => setTimeout(r, 1000));
           }
         }
       }
-
+ 
       // ── Outros (renda fixa, cripto, etc.) ────────────────────────────────
       for (const asset of other) {
         const { currentValue, gainPercent } = this.calcPosition(asset, null);
         analysis.push({
-          ticker: asset.ticker,
-          name: asset.name || asset.ticker,
+          ticker: asset.ticker, name: asset.name || asset.ticker,
           quantity: asset.quantity,
           averagePrice: parseFloat(asset.average_price) || 0,
           currentPrice: parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0,
           currentValue, gainPercent,
           qualityScore: null, passFilters: true, violations: [],
           recommendation: { action: 'MANTER', reason: 'Fora do escopo fundamentalista' },
-          fundamentals: null,
-          assetClass: asset.class_name,
-          noFundamentals: true
+          fundamentals: null, assetClass: asset.class_name, noFundamentals: true
         });
       }
-
+ 
       analysis.sort((a, b) => {
         if (!!a.noFundamentals !== !!b.noFundamentals) return a.noFundamentals ? 1 : -1;
         return (b.currentValue || 0) - (a.currentValue || 0);
       });
-
+ 
       const avgScore = scoredCount > 0 ? Math.round(totalScore / scoredCount) : 0;
-
+ 
       let aiAnalysis = null;
       const scoredPositions = analysis.filter(a => !a.noFundamentals && a.qualityScore != null);
       if (groqKey && scoredPositions.length > 0) {
-        try {
-          aiAnalysis = await this.getAIPortfolioAnalysis(groqKey, scoredPositions, filters);
-        } catch (e) {
-          console.error('Groq portfolio analysis error:', e.message);
-        }
+        try { aiAnalysis = await this.getAIPortfolioAnalysis(groqKey, scoredPositions, filters); }
+        catch (e) { console.error('Groq portfolio error:', e.message); }
       }
-
+ 
       return res.json({
         analysis,
         summary: { manter, avaliarTroca, totalPositions: analysis.length, avgQualityScore: avgScore },
-        aiAnalysis,
-        filtersApplied: filters
+        aiAnalysis, filtersApplied: filters
       });
     } catch (error) {
       console.error('Erro analyzePositions:', error);
       return res.status(500).json({ error: 'Erro ao analisar posições: ' + error.message });
     }
   }
-
-  // ── Sugestões de troca ────────────────────────────────────────────────────
+ 
   async getSuggestions(req, res) {
     try {
       const { ticker, filters = {} } = req.body;
       const candidates = STOCKS_BR.filter(s => s !== ticker).slice(0, 20);
       const suggestions = [];
-
       for (const stock of candidates) {
         try {
           const yData = await yahooGetBR(stock);
@@ -558,187 +510,122 @@ class ScreenerController {
           const fundamentals = this.extractYahooFundamentals(yData);
           const score = this.calculateScore(fundamentals, filters) ?? 50;
           if (this.applyFilters(fundamentals, filters)) {
-            suggestions.push({
-              ticker: stock,
-              name: priceModule.longName || priceModule.shortName || stock,
-              price: priceModule.regularMarketPrice?.raw ?? null,
-              ...fundamentals,
-              score
-            });
+            suggestions.push({ ticker: stock, name: priceModule.longName || stock, price: priceModule.regularMarketPrice ?? null, ...fundamentals, score });
           }
         } catch (e) { }
         await new Promise(r => setTimeout(r, 300));
       }
-
       suggestions.sort((a, b) => b.score - a.score);
       return res.json({ suggestions: suggestions.slice(0, 5) });
     } catch (error) {
-      console.error('Erro getSuggestions:', error);
       return res.status(500).json({ error: 'Erro ao buscar sugestões' });
     }
   }
-
+ 
   async getFundamentals(req, res) {
     try {
       const { ticker } = req.params;
       const yData = await yahooGetBR(ticker);
       const priceModule = yData.price || {};
       const fundamentals = this.extractYahooFundamentals(yData);
-
       return res.json({
-        ticker,
-        name: priceModule.longName || priceModule.shortName || ticker,
-        price: priceModule.regularMarketPrice?.raw ?? null,
-        ...fundamentals,
-        score: this.calculateScore(fundamentals, {}) ?? 50
+        ticker, name: priceModule.longName || priceModule.shortName || ticker,
+        price: priceModule.regularMarketPrice ?? null,
+        ...fundamentals, score: this.calculateScore(fundamentals, {}) ?? 50
       });
     } catch (error) {
-      console.error('Erro getFundamentals:', error);
       return res.status(500).json({ error: 'Erro ao buscar dados: ' + error.message });
     }
   }
-
+ 
   async saveFilters(req, res) {
     try {
       const { name, filters } = req.body;
-      await pool.query(`
-        INSERT INTO screener_filters (user_id, name, filters)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id, name) DO UPDATE SET filters = $3, updated_at = NOW()
-      `, [req.userId, name, JSON.stringify(filters)]);
+      await pool.query(`INSERT INTO screener_filters (user_id, name, filters) VALUES ($1, $2, $3) ON CONFLICT (user_id, name) DO UPDATE SET filters = $3, updated_at = NOW()`, [req.userId, name, JSON.stringify(filters)]);
       return res.json({ message: 'Filtros salvos' });
-    } catch (error) {
-      return res.status(500).json({ error: 'Erro ao salvar' });
-    }
+    } catch (error) { return res.status(500).json({ error: 'Erro ao salvar' }); }
   }
-
+ 
   async listFilters(req, res) {
     try {
       const result = await pool.query('SELECT * FROM screener_filters WHERE user_id = $1', [req.userId]);
       return res.json({ filters: result.rows });
-    } catch (error) {
-      return res.status(500).json({ error: 'Erro ao listar' });
-    }
+    } catch (error) { return res.status(500).json({ error: 'Erro ao listar' }); }
   }
-
+ 
   // ── Extração de fundamentals — Yahoo Finance ──────────────────────────────
-  // Estrutura do quoteSummary v10:
-  //   price:               regularMarketPrice, longName, shortName, regularMarketChangePercent
+  // Com formatted=false, Yahoo retorna números diretos (não { raw, fmt })
+  // Estrutura:
+  //   price:                regularMarketPrice, longName, shortName, regularMarketChangePercent
   //   defaultKeyStatistics: forwardPE, priceToBook, enterpriseToEbitda, dividendYield
-  //   financialData:        currentRatio, debtToEquity, returnOnAssets, returnOnEquity,
-  //                         revenueGrowth, operatingMargins, profitMargins
-  //   summaryDetail:        trailingPE, forwardPE, dividendYield, priceToSalesTrailing12Months
-  //
-  // Campos retornam como { raw: number, fmt: "string" } — sempre usar .raw
-  // debtToEquity vem em escala percentual (ex: 101.6 = 1.016x) — dividir por 100
+  //   financialData:        currentRatio, debtToEquity (escala %, /100), returnOnAssets,
+  //                         returnOnEquity, revenueGrowth, operatingMargins, profitMargins
+  //   summaryDetail:        trailingPE, dividendYield, priceToSalesTrailing12Months
   extractYahooFundamentals(yData) {
     const ks = yData.defaultKeyStatistics || {};
     const fd = yData.financialData        || {};
     const sd = yData.summaryDetail        || {};
-
-    // Extrai o valor numérico de campos Yahoo ({ raw, fmt } ou number direto)
-    const raw = (obj, key) => {
-      const v = obj[key];
+ 
+    // Com formatted=false os valores chegam direto como number ou null
+    // Porém alguns módulos ainda podem retornar { raw, fmt } — tratar os dois casos
+    const n = (v) => {
       if (v == null) return null;
-      const n = typeof v === 'object' ? v.raw : v;
-      return (n != null && !isNaN(parseFloat(n))) ? parseFloat(n) : null;
+      const val = typeof v === 'object' ? v.raw ?? v.fmt : v;
+      const f = parseFloat(val);
+      return isNaN(f) || !isFinite(f) ? null : f;
     };
-    const pct = (obj, key) => {
-      const v = raw(obj, key);
-      return v != null ? v * 100 : null;
-    };
-
-    // P/L — trailingPE do summaryDetail é o mais confiável
-    const pl = raw(sd, 'trailingPE') ?? raw(ks, 'forwardPE') ?? raw(sd, 'forwardPE');
-
-    // P/VP — defaultKeyStatistics
-    const pvp = raw(ks, 'priceToBook');
-
-    // DY — summaryDetail.dividendYield (em decimal: 0.05 = 5%)
-    // Às vezes já vem em % (ex: 5.2), às vezes em decimal (0.052)
-    const dy = (() => {
-      const v = raw(sd, 'dividendYield') ?? raw(ks, 'dividendYield');
+    const pct = (v) => { const x = n(v); return x != null ? x * 100 : null; };
+ 
+    const pl      = n(sd.trailingPE)  ?? n(ks.forwardPE) ?? n(sd.forwardPE);
+    const pvp     = n(ks.priceToBook);
+    const dy      = (() => {
+      const v = n(sd.dividendYield) ?? n(ks.dividendYield);
       if (v == null) return null;
-      return v > 1 ? v : v * 100;
+      return v > 1 ? v : v * 100; // Yahoo às vezes retorna 5.2 ou 0.052
     })();
-
-    // EV/EBITDA
-    const evEbitda = raw(ks, 'enterpriseToEbitda');
-
-    // PSR
-    const psr = raw(sd, 'priceToSalesTrailing12Months');
-
-    // Margens (em decimal no Yahoo → multiplicar por 100)
-    const margemEbit    = pct(fd, 'operatingMargins');
-    const margemLiquida = pct(fd, 'profitMargins');
-
-    // Liquidez corrente
-    const liquidezCorrente = raw(fd, 'currentRatio');
-
-    // ROE e ROIC proxy (ROA)
-    const roe  = pct(fd, 'returnOnEquity');
-    const roic = pct(fd, 'returnOnAssets');
-
-    // Dívida/PL — Yahoo retorna em percentual (101.6 = 1.016x) → dividir por 100
-    const dividaPl = (() => {
-      const v = raw(fd, 'debtToEquity');
-      return v != null ? v / 100 : null;
-    })();
-
-    // Crescimento de receita
-    const crescReceita = pct(fd, 'revenueGrowth');
-
-    return {
-      pl, pvp, psr, dy, evEbitda,
-      margemEbit, margemLiquida,
-      liquidezCorrente, roic, roe,
-      dividaPl, crescReceita
-    };
+    const evEbitda         = n(ks.enterpriseToEbitda);
+    const psr              = n(sd.priceToSalesTrailing12Months);
+    const margemEbit       = pct(fd.operatingMargins);
+    const margemLiquida    = pct(fd.profitMargins);
+    const liquidezCorrente = n(fd.currentRatio);
+    const roe              = pct(fd.returnOnEquity);
+    const roic             = pct(fd.returnOnAssets);
+    const dividaPl         = (() => { const v = n(fd.debtToEquity); return v != null ? v / 100 : null; })();
+    const crescReceita     = pct(fd.revenueGrowth);
+ 
+    return { pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida, liquidezCorrente, roic, roe, dividaPl, crescReceita };
   }
-
-  // ── Extração de fundamentals — AlphaVantage (ações US) ───────────────────
+ 
   extractUSFundamentals(quote, overview) {
-    const safe = (v) => {
-      const n = parseFloat(v);
-      return isNaN(n) || !isFinite(n) ? null : n;
-    };
+    const safe = (v) => { const n = parseFloat(v); return isNaN(n) || !isFinite(n) ? null : n; };
     return {
       pl:               safe(overview?.PERatio),
       pvp:              safe(overview?.PriceToBookRatio),
       psr:              safe(overview?.PriceToSalesRatioTTM),
       dy:               overview?.DividendYield ? safe(overview.DividendYield) * 100 : null,
       evEbitda:         safe(overview?.EVToEBITDA),
-      margemEbit:       safe(overview?.OperatingMarginTTM) != null
-                          ? safe(overview.OperatingMarginTTM) * 100 : null,
-      margemLiquida:    safe(overview?.ProfitMargin) != null
-                          ? safe(overview.ProfitMargin) * 100 : null,
+      margemEbit:       safe(overview?.OperatingMarginTTM) != null ? safe(overview.OperatingMarginTTM) * 100 : null,
+      margemLiquida:    safe(overview?.ProfitMargin)        != null ? safe(overview.ProfitMargin) * 100        : null,
       liquidezCorrente: safe(overview?.CurrentRatio),
-      roic:             safe(overview?.ReturnOnAssetsTTM) != null
-                          ? safe(overview.ReturnOnAssetsTTM) * 100 : null,
-      roe:              safe(overview?.ReturnOnEquityTTM) != null
-                          ? safe(overview.ReturnOnEquityTTM) * 100 : null,
+      roic:             safe(overview?.ReturnOnAssetsTTM)   != null ? safe(overview.ReturnOnAssetsTTM) * 100   : null,
+      roe:              safe(overview?.ReturnOnEquityTTM)   != null ? safe(overview.ReturnOnEquityTTM) * 100   : null,
       dividaPl:         safe(overview?.DebtToEquityRatio),
-      crescReceita:     safe(overview?.QuarterlyRevenueGrowthYOY) != null
-                          ? safe(overview.QuarterlyRevenueGrowthYOY) * 100 : null,
+      crescReceita:     safe(overview?.QuarterlyRevenueGrowthYOY) != null ? safe(overview.QuarterlyRevenueGrowthYOY) * 100 : null,
     };
   }
-
-  // ── Filtros ───────────────────────────────────────────────────────────────
+ 
   applyFilters(data, filters) {
     if (!filters || Object.keys(filters).length === 0) return true;
     const map = {
-      pl:               [filters.plMin,                 filters.plMax],
-      pvp:              [filters.pvpMin,                filters.pvpMax],
-      psr:              [filters.psrMin,                filters.psrMax],
-      dy:               [filters.dyMin,                 filters.dyMax],
-      evEbitda:         [filters.evEbitdaMin,           filters.evEbitdaMax],
-      margemEbit:       [filters.margemEbitMin,         filters.margemEbitMax],
-      margemLiquida:    [filters.margemLiquidaMin,      filters.margemLiquidaMax],
-      liquidezCorrente: [filters.liquidezCorrenteMin,   filters.liquidezCorrenteMax],
-      roic:             [filters.roicMin,               filters.roicMax],
-      roe:              [filters.roeMin,                filters.roeMax],
-      dividaPl:         [filters.dividaPatrimonioMin,   filters.dividaPatrimonioMax],
-      crescReceita:     [filters.crescimentoReceitaMin, filters.crescimentoReceitaMax],
+      pl: [filters.plMin, filters.plMax], pvp: [filters.pvpMin, filters.pvpMax],
+      psr: [filters.psrMin, filters.psrMax], dy: [filters.dyMin, filters.dyMax],
+      evEbitda: [filters.evEbitdaMin, filters.evEbitdaMax],
+      margemEbit: [filters.margemEbitMin, filters.margemEbitMax],
+      margemLiquida: [filters.margemLiquidaMin, filters.margemLiquidaMax],
+      liquidezCorrente: [filters.liquidezCorrenteMin, filters.liquidezCorrenteMax],
+      roic: [filters.roicMin, filters.roicMax], roe: [filters.roeMin, filters.roeMax],
+      dividaPl: [filters.dividaPatrimonioMin, filters.dividaPatrimonioMax],
+      crescReceita: [filters.crescimentoReceitaMin, filters.crescimentoReceitaMax],
     };
     for (const [field, [min, max]] of Object.entries(map)) {
       const val = data[field];
@@ -748,66 +635,50 @@ class ScreenerController {
     }
     return true;
   }
-
+ 
   getFilterViolations(data, filters) {
     const violations = [];
     const checks = [
-      ['P/L',      'pl',               filters.plMin,                 filters.plMax],
-      ['P/VP',     'pvp',              filters.pvpMin,                filters.pvpMax],
-      ['PSR',      'psr',              filters.psrMin,                filters.psrMax],
-      ['DY',       'dy',               filters.dyMin,                 filters.dyMax],
-      ['EV/EBITDA','evEbitda',         filters.evEbitdaMin,           filters.evEbitdaMax],
-      ['M.EBIT',   'margemEbit',       filters.margemEbitMin,         filters.margemEbitMax],
-      ['M.Líq',    'margemLiquida',    filters.margemLiquidaMin,      filters.margemLiquidaMax],
-      ['Liq.Cor',  'liquidezCorrente', filters.liquidezCorrenteMin,   filters.liquidezCorrenteMax],
-      ['ROIC',     'roic',             filters.roicMin,               filters.roicMax],
-      ['ROE',      'roe',              filters.roeMin,                filters.roeMax],
-      ['Dív/PL',   'dividaPl',        filters.dividaPatrimonioMin,   filters.dividaPatrimonioMax],
-      ['Cresc.',   'crescReceita',     filters.crescimentoReceitaMin, filters.crescimentoReceitaMax],
+      ['P/L','pl',filters.plMin,filters.plMax],['P/VP','pvp',filters.pvpMin,filters.pvpMax],
+      ['PSR','psr',filters.psrMin,filters.psrMax],['DY','dy',filters.dyMin,filters.dyMax],
+      ['EV/EBITDA','evEbitda',filters.evEbitdaMin,filters.evEbitdaMax],
+      ['M.EBIT','margemEbit',filters.margemEbitMin,filters.margemEbitMax],
+      ['M.Líq','margemLiquida',filters.margemLiquidaMin,filters.margemLiquidaMax],
+      ['Liq.Cor','liquidezCorrente',filters.liquidezCorrenteMin,filters.liquidezCorrenteMax],
+      ['ROIC','roic',filters.roicMin,filters.roicMax],['ROE','roe',filters.roeMin,filters.roeMax],
+      ['Dív/PL','dividaPl',filters.dividaPatrimonioMin,filters.dividaPatrimonioMax],
+      ['Cresc.','crescReceita',filters.crescimentoReceitaMin,filters.crescimentoReceitaMax],
     ];
     for (const [label, field, min, max] of checks) {
       const val = data[field];
       if (val == null) continue;
-      if (min != null && !isNaN(min) && val < parseFloat(min))
-        violations.push(`${label} baixo (${val.toFixed(1)})`);
-      else if (max != null && !isNaN(max) && val > parseFloat(max))
-        violations.push(`${label} alto (${val.toFixed(1)})`);
+      if (min != null && !isNaN(min) && val < parseFloat(min)) violations.push(`${label} baixo (${val.toFixed(1)})`);
+      else if (max != null && !isNaN(max) && val > parseFloat(max)) violations.push(`${label} alto (${val.toFixed(1)})`);
     }
     return violations;
   }
-
+ 
   calculateScore(data, filters = {}) {
-    const hasAny = [data.pl, data.pvp, data.dy, data.roe, data.roic,
-                    data.margemLiquida, data.dividaPl, data.crescReceita,
-                    data.liquidezCorrente].some(v => v != null);
+    const hasAny = [data.pl,data.pvp,data.dy,data.roe,data.roic,data.margemLiquida,data.dividaPl,data.crescReceita,data.liquidezCorrente].some(v => v != null);
     if (!hasAny) return null;
-
     let score = 50;
-    const inRange = (val, min, max) =>
-      val != null &&
-      (min == null || val >= parseFloat(min)) &&
-      (max == null || val <= parseFloat(max));
-
+    const inRange = (val, min, max) => val != null && (min == null || val >= parseFloat(min)) && (max == null || val <= parseFloat(max));
     if (data.pl != null && data.pl > 0) {
       if (inRange(data.pl, filters.plMin, filters.plMax)) score += 10;
-      else if (data.pl <= 10) score += 3;
-      else score -= 10;
+      else if (data.pl <= 10) score += 3; else score -= 10;
     }
     if (data.pvp != null) {
       if (inRange(data.pvp, filters.pvpMin, filters.pvpMax)) score += 8;
-      else if (data.pvp < 1) score += 3;
-      else if (data.pvp > 3) score -= 10;
+      else if (data.pvp < 1) score += 3; else if (data.pvp > 3) score -= 10;
     }
     if (data.dy != null) {
       if (inRange(data.dy, filters.dyMin, filters.dyMax)) score += 10;
-      else if (data.dy > 6) score += 6;
-      else if (data.dy > 4) score += 3;
+      else if (data.dy > 6) score += 6; else if (data.dy > 4) score += 3;
       else if (filters.dyMin && data.dy < filters.dyMin) score -= 5;
     }
     if (data.roe != null) {
       if (inRange(data.roe, filters.roeMin, filters.roeMax)) score += 10;
-      else if (data.roe > 20) score += 6;
-      else if (data.roe > 15) score += 3;
+      else if (data.roe > 20) score += 6; else if (data.roe > 15) score += 3;
       else if (filters.roeMin && data.roe < filters.roeMin) score -= 8;
     }
     if (data.roic != null) {
@@ -831,13 +702,11 @@ class ScreenerController {
       else if (data.crescReceita > 10) score += 3;
       else if (filters.crescimentoReceitaMin && data.crescReceita < filters.crescimentoReceitaMin) score -= 5;
     }
-
     return Math.max(0, Math.min(100, score));
   }
-
+ 
   getRecommendationReason(f, score, passFilters, violations) {
-    if (!passFilters && violations?.length > 0)
-      return `Fora dos filtros: ${violations.slice(0, 2).join('; ')}`;
+    if (!passFilters && violations?.length > 0) return `Fora dos filtros: ${violations.slice(0, 2).join('; ')}`;
     const positives = [];
     if (f.roe != null && f.roe > 15)  positives.push(`ROE forte (${f.roe.toFixed(1)}%)`);
     if (f.dy  != null && f.dy  > 5)   positives.push(`DY atrativo (${f.dy.toFixed(1)}%)`);
@@ -846,57 +715,39 @@ class ScreenerController {
     if (score < 55) return 'Indicadores abaixo dos parâmetros definidos';
     return 'Indicadores dentro dos parâmetros';
   }
-
-  // ── Helpers de posição ────────────────────────────────────────────────────
+ 
   calcPosition(asset, currentPx) {
-    const avgPrice     = parseFloat(asset.average_price) || 0;
-    const qty          = parseFloat(asset.quantity) || 0;
-    const px           = currentPx || parseFloat(asset.current_price) || avgPrice;
-    const invested     = qty * avgPrice;
+    const avgPrice = parseFloat(asset.average_price) || 0;
+    const qty      = parseFloat(asset.quantity) || 0;
+    const px       = currentPx || parseFloat(asset.current_price) || avgPrice;
+    const invested = qty * avgPrice;
     const currentValue = qty * px;
     const gainPercent  = invested > 0 ? ((currentValue - invested) / invested) * 100 : 0;
     return { currentValue, gainPercent };
   }
-
+ 
   pushBasicPosition(analysis, asset, reason) {
     const { currentValue, gainPercent } = this.calcPosition(asset, null);
     analysis.push({
-      ticker: asset.ticker,
-      name: asset.name || asset.ticker,
+      ticker: asset.ticker, name: asset.name || asset.ticker,
       quantity: asset.quantity,
       averagePrice: parseFloat(asset.average_price) || 0,
       currentPrice: parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0,
       currentValue, gainPercent,
       qualityScore: null, passFilters: false, violations: [],
       recommendation: { action: 'AVALIAR', reason },
-      fundamentals: {},
-      assetClass: asset.class_name,
-      noFundamentals: true
+      fundamentals: {}, assetClass: asset.class_name, noFundamentals: true
     });
   }
-
-  // ── IA ────────────────────────────────────────────────────────────────────
+ 
   async getAIRecommendation(apiKey, stocks, filters) {
     const summary = stocks.slice(0, 8).map(s =>
       `${s.ticker}(${s.market||'BR'}): Score=${s.score}, P/L=${s.pl?.toFixed(1)??'-'}, DY=${s.dy?.toFixed(1)??'-'}%, ROE=${s.roe?.toFixed(1)??'-'}%`
     ).join('\n');
-
-    const filtersDesc = Object.entries(filters).filter(([,v])=>v!=null)
-      .map(([k,v])=>`${k}=${v}`).join(', ');
-
-    const prompt = `Analista de ações. Filtros do investidor: ${filtersDesc||'padrão'}.
-Ativos que passaram:
-${summary}
-Retorne APENAS JSON:
-{"topPicks":[{"ticker":"XX","reason":"motivo","conviction":"alta|media|baixa","horizon":"curto|medio|longo prazo"}],"marketComment":"2-3 frases","riskWarning":"1 frase"}
-Máximo 3 topPicks.`;
-
+    const filtersDesc = Object.entries(filters).filter(([,v])=>v!=null).map(([k,v])=>`${k}=${v}`).join(', ');
+    const prompt = `Analista de ações. Filtros do investidor: ${filtersDesc||'padrão'}.\nAtivos que passaram:\n${summary}\nRetorne APENAS JSON:\n{"topPicks":[{"ticker":"XX","reason":"motivo","conviction":"alta|media|baixa","horizon":"curto|medio|longo prazo"}],"marketComment":"2-3 frases","riskWarning":"1 frase"}\nMáximo 3 topPicks.`;
     const resp = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-      { model: 'llama-3.3-70b-versatile',
-        messages: [
-          { role: 'system', content: 'Analista financeiro. Responda APENAS com JSON válido, sem markdown.' },
-          { role: 'user', content: prompt }
-        ], max_tokens: 800, temperature: 0.5 },
+      { model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: 'Analista financeiro. Responda APENAS com JSON válido, sem markdown.' }, { role: 'user', content: prompt }], max_tokens: 800, temperature: 0.5 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 25000 }
     );
     const content = resp.data?.choices?.[0]?.message?.content || '';
@@ -904,31 +755,21 @@ Máximo 3 topPicks.`;
     const match = clean.match(/\{[\s\S]*\}/);
     return JSON.parse(match ? match[0] : clean);
   }
-
+ 
   async getAIPortfolioAnalysis(apiKey, positions, filters) {
     const summary = positions.slice(0, 12).map(p => {
       const v = p.violations?.length > 0 ? ` | Viola: ${p.violations.join(', ')}` : '';
       return `${p.ticker}(${p.market||'BR'}): Score=${p.qualityScore}, Ganho=${p.gainPercent?.toFixed(1)}%, Ação=${p.recommendation?.action}${v}`;
     }).join('\n');
-
     const filtersDesc = [
       filters.plMin||filters.plMax ? `P/L ${filters.plMin??'?'}–${filters.plMax??'?'}` : null,
       filters.dyMin ? `DY mín ${filters.dyMin}%` : null,
       filters.roeMin ? `ROE mín ${filters.roeMin}%` : null,
       filters.dividaPatrimonioMax ? `Dív/PL máx ${filters.dividaPatrimonioMax}` : null,
     ].filter(Boolean).join(', ');
-
-    const prompt = `Analise o portfólio (critérios: ${filtersDesc||'padrão'}):
-${summary}
-Retorne APENAS JSON:
-{"portfolioScore":75,"summary":"2 frases","strengths":["ponto1"],"weaknesses":["ponto1 com ticker"],"suggestion":"ação imediata"}`;
-
+    const prompt = `Analise o portfólio (critérios: ${filtersDesc||'padrão'}):\n${summary}\nRetorne APENAS JSON:\n{"portfolioScore":75,"summary":"2 frases","strengths":["ponto1"],"weaknesses":["ponto1 com ticker"],"suggestion":"ação imediata"}`;
     const resp = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-      { model: 'llama-3.3-70b-versatile',
-        messages: [
-          { role: 'system', content: 'Analista financeiro brasileiro sênior. Responda APENAS com JSON válido, sem markdown.' },
-          { role: 'user', content: prompt }
-        ], max_tokens: 700, temperature: 0.5 },
+      { model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: 'Analista financeiro brasileiro sênior. Responda APENAS com JSON válido, sem markdown.' }, { role: 'user', content: prompt }], max_tokens: 700, temperature: 0.5 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 25000 }
     );
     const content = resp.data?.choices?.[0]?.message?.content || '';
@@ -937,5 +778,5 @@ Retorne APENAS JSON:
     return JSON.parse(match ? match[0] : clean);
   }
 }
-
+ 
 module.exports = new ScreenerController();
