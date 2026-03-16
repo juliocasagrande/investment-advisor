@@ -12,6 +12,7 @@ class MacroService {
         [userId]
       );
       const apiKey = settings.rows[0]?.groq_api_key || process.env.GROQ_API_KEY;
+      console.log(`[Macro] userId=${userId} apiKey=${apiKey ? '✅ presente (' + apiKey.slice(0,8) + '...)' : '❌ ausente'}`);
 
       // Verificar cache de hoje
       const existing = await pool.query(`
@@ -23,33 +24,42 @@ class MacroService {
       if (existing.rows.length > 0) {
         try {
           const cached = JSON.parse(existing.rows[0].analysis_data);
-          // Se temos Groq key agora mas o cache é isDefault, invalidar e regenerar
+          console.log(`[Macro] Cache encontrado — isDefault=${cached.isDefault}`);
+          // Se temos Groq key mas o cache é isDefault, invalidar e regenerar
           if (apiKey && cached.isDefault) {
+            console.log('[Macro] Cache isDefault com key disponível — invalidando para regenerar via Groq');
             await pool.query('DELETE FROM macro_analysis WHERE user_id = $1', [userId]);
           } else {
+            console.log('[Macro] Retornando cache válido');
             return cached;
           }
-        } catch {
-          // cache corrompido, regenerar
+        } catch (e) {
+          console.warn('[Macro] Cache corrompido, regenerando:', e.message);
         }
+      } else {
+        console.log('[Macro] Sem cache para hoje — gerando nova análise');
       }
 
       if (!apiKey) {
+        console.log('[Macro] Sem API key — retornando análise padrão');
         return this.getDefaultAnalysis();
       }
 
       // Gerar nova análise com Groq
+      console.log('[Macro] Chamando Groq API...');
       const analysis = await this.generateAnalysis(apiKey);
+      console.log(`[Macro] Groq retornou — isDefault=${analysis.isDefault}`);
 
       // Salvar no banco
       await pool.query(
         'INSERT INTO macro_analysis (user_id, analysis_data) VALUES ($1, $2)',
         [userId, JSON.stringify(analysis)]
       );
+      console.log('[Macro] Análise salva no banco');
 
       return analysis;
     } catch (error) {
-      console.error('Erro ao obter análise macro:', error);
+      console.error('[Macro] ERRO em getOrCreateAnalysis:', error.message, error.stack);
       return this.getDefaultAnalysis();
     }
   }
@@ -57,6 +67,7 @@ class MacroService {
   async generateAnalysis(apiKey) {
     try {
       const currentDate = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+      console.log(`[Macro] generateAnalysis — modelo: llama-3.3-70b-versatile, data: ${currentDate}`);
       const prompt = `Você é um analista financeiro especializado em investimentos brasileiros.
 Analise o cenário macroeconômico atual (${currentDate}) para investidores brasileiros.
 
@@ -117,8 +128,10 @@ O campo recommendedClass deve indicar claramente qual ÚNICA classe de ativo est
       );
 
       const content = response.data?.choices?.[0]?.message?.content;
+      console.log(`[Macro] Groq respondeu — content length: ${content?.length || 0}`);
       
       if (!content) {
+        console.error('[Macro] Groq retornou content vazio');
         return this.getDefaultAnalysis();
       }
 
@@ -135,10 +148,11 @@ O campo recommendedClass deve indicar claramente qual ÚNICA classe de ativo est
       const analysis = JSON.parse(cleanContent);
       analysis.isDefault = false;
       analysis.updatedAt = analysis.updatedAt || new Date().toISOString();
+      console.log(`[Macro] JSON parseado com sucesso — recommendedClass: ${analysis.recommendedClass?.name}`);
       
       return analysis;
     } catch (error) {
-      console.error('Erro ao gerar análise Groq:', error.response?.data || error.message);
+      console.error('[Macro] ERRO em generateAnalysis:', error.response?.data || error.message);
       return this.getDefaultAnalysis();
     }
   }
