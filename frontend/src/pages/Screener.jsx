@@ -60,14 +60,14 @@ const fmtPct = (v) => v == null ? '—' : `${v >= 0 ? '+' : ''}${Number(v).toFix
 
 const scoreColor = (s) => {
   if (s == null) return 'text-slate-500';
-  if (s >= 70)  return 'text-emerald-400';
-  if (s >= 50)  return 'text-amber-400';
+  if (s >= 80)  return 'text-emerald-400';
+  if (s >= 60)  return 'text-amber-400';
   return 'text-red-400';
 };
 const scoreBg = (s) => {
   if (s == null) return 'bg-slate-700';
-  if (s >= 70)  return 'bg-emerald-500';
-  if (s >= 50)  return 'bg-amber-500';
+  if (s >= 80)  return 'bg-emerald-500';
+  if (s >= 60)  return 'bg-amber-500';
   return 'bg-red-500';
 };
 const actionStyle = (a) => {
@@ -715,12 +715,12 @@ export default function Screener() {
                   onClick={() => setShowOnlyPassed(!showOnlyPassed)}
                   className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
                     showOnlyPassed
-                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                      ? 'bg-blue-500/20 border-blue-500/40 text-blue-400'
                       : 'border-slate-700 text-slate-400'
                   }`}
                 >
                   {showOnlyPassed
-                    ? `Passaram (${results.filter(r => r.passFilters).length})`
+                    ? `✦ Comprar (${results.filter(r => r.passFilters).length})`
                     : `Todos (${results.length})`}
                 </button>
               )}

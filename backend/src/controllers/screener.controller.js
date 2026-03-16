@@ -246,8 +246,10 @@ class ScreenerController {
         const yData = isUS ? await yahooGetUS(ticker) : await yahooGetBR(ticker);
         const priceModule = yData.price || {};
         const fundamentals = this.extractYahooFundamentals(yData);
-        const passFilters = this.applyFilters(fundamentals, filters);
         const score = this.calculateScore(fundamentals, filters) ?? 50;
+        // passFilters = score >= 80: ativo "passou" quando atinge o limiar de compra
+        // Os filtros manuais ainda refinam, mas o score é o critério principal
+        const passFilters = score >= 80 && this.applyFilters(fundamentals, filters);
         results.push({
           ticker,
           name: priceModule.longName || priceModule.shortName || ticker,
@@ -258,7 +260,7 @@ class ScreenerController {
           ...fundamentals,
           score,
           passFilters,
-          recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
+          recommendation: score >= 80 ? 'COMPRAR' : score >= 60 ? 'MANTER' : 'AVALIAR'
         });
         console.log(`[Search] ${ticker} — score: ${score}, passFilters: ${passFilters}`);
       } catch (e) {
@@ -327,7 +329,7 @@ class ScreenerController {
           const passFilters = this.applyFilters(fundamentals, filters);
           const violations  = this.getFilterViolations(fundamentals, filters);
           const effectiveScore = score ?? 50;
-          const action = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
+          const action = (effectiveScore >= 80) ? 'MANTER' : 'AVALIAR_TROCA';
  
           if (action === 'MANTER') manter++; else avaliarTroca++;
           if (score != null) { totalScore += score; scoredCount++; }
@@ -376,7 +378,7 @@ class ScreenerController {
           const passFilters = this.applyFilters(fundamentals, filters);
           const violations  = this.getFilterViolations(fundamentals, filters);
           const effectiveScore = score ?? 50;
-          const action = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
+          const action = (effectiveScore >= 80) ? 'MANTER' : 'AVALIAR_TROCA';
  
           if (action === 'MANTER') manter++; else avaliarTroca++;
           if (score != null) { totalScore += score; scoredCount++; }
@@ -578,62 +580,193 @@ class ScreenerController {
     return violations;
   }
  
+  // ── Score combinado (0–100) ───────────────────────────────────────────────
+  // Cada indicador contribui com pontos dentro do seu peso máximo.
+  // A pontuação de cada campo é proporcional à qualidade do valor — não binária.
+  // Score final = soma dos pontos / soma dos pesos disponíveis × 100
+  //
+  // Limiares de recomendação:
+  //   >= 80 → COMPRAR  (excelente combinação de indicadores)
+  //   >= 60 → MANTER   (bom, mas não excepcional)
+  //    < 60 → AVALIAR  (indicadores fracos ou abaixo dos parâmetros)
   calculateScore(data, filters = {}) {
-    const hasAny = [data.pl,data.pvp,data.dy,data.roe,data.roic,data.margemLiquida,data.dividaPl,data.crescReceita,data.liquidezCorrente].some(v => v != null);
+    const hasAny = [data.pl, data.pvp, data.dy, data.roe, data.roic,
+                    data.margemLiquida, data.dividaPl, data.crescReceita,
+                    data.liquidezCorrente].some(v => v != null);
     if (!hasAny) return null;
-    let score = 50;
-    const inRange = (val, min, max) => val != null && (min == null || val >= parseFloat(min)) && (max == null || val <= parseFloat(max));
-    if (data.pl != null && data.pl > 0) {
-      if (inRange(data.pl, filters.plMin, filters.plMax)) score += 10;
-      else if (data.pl <= 10) score += 3; else score -= 10;
+ 
+    // Cada entrada: [campo, peso, fn pontuação → 0.0 a 1.0]
+    // A fn recebe o valor e os filtros e retorna quanto do peso máximo ganhou.
+    const criteria = [
+ 
+      // ── P/L (peso 15) — menor é melhor, ideal 5–12 ────────────────────────
+      ['pl', 15, (v) => {
+        if (v <= 0) return 0;
+        const min = filters.plMin, max = filters.plMax;
+        if (min != null && max != null && v >= min && v <= max) return 1.0;
+        if (v <= 8)  return 0.95;
+        if (v <= 12) return 0.80;
+        if (v <= 15) return 0.65;
+        if (v <= 20) return 0.45;
+        if (v <= 30) return 0.20;
+        return 0.05;
+      }],
+ 
+      // ── P/VP (peso 10) — menor é melhor, ideal 0.5–1.5 ──────────────────
+      ['pvp', 10, (v) => {
+        const min = filters.pvpMin, max = filters.pvpMax;
+        if (min != null && max != null && v >= min && v <= max) return 1.0;
+        if (v <= 0) return 0;
+        if (v <= 0.8)  return 0.95;
+        if (v <= 1.2)  return 0.85;
+        if (v <= 1.8)  return 0.70;
+        if (v <= 2.5)  return 0.45;
+        if (v <= 3.5)  return 0.20;
+        return 0.05;
+      }],
+ 
+      // ── Dividend Yield (peso 15) — maior é melhor, ideal > 5% ────────────
+      ['dy', 15, (v) => {
+        const min = filters.dyMin;
+        if (min != null && v >= min) return Math.min(1.0, 0.7 + (v - min) / (min * 2) * 0.3);
+        if (v >= 10) return 0.95;
+        if (v >= 7)  return 0.85;
+        if (v >= 5)  return 0.70;
+        if (v >= 3)  return 0.45;
+        if (v >= 1)  return 0.25;
+        return 0.10;
+      }],
+ 
+      // ── ROE (peso 15) — maior é melhor, ideal > 15% ──────────────────────
+      ['roe', 15, (v) => {
+        const min = filters.roeMin;
+        if (min != null && v >= min) return Math.min(1.0, 0.7 + (v - min) / (min * 2) * 0.3);
+        if (v >= 30) return 0.95;
+        if (v >= 20) return 0.85;
+        if (v >= 15) return 0.70;
+        if (v >= 10) return 0.50;
+        if (v >= 5)  return 0.30;
+        if (v >= 0)  return 0.15;
+        return 0.0; // ROE negativo penaliza
+      }],
+ 
+      // ── ROIC/ROA (peso 10) — maior é melhor, ideal > 8% ─────────────────
+      ['roic', 10, (v) => {
+        const min = filters.roicMin;
+        if (min != null && v >= min) return Math.min(1.0, 0.7 + (v - min) / (min * 2) * 0.3);
+        if (v >= 20) return 0.95;
+        if (v >= 12) return 0.80;
+        if (v >= 8)  return 0.65;
+        if (v >= 5)  return 0.40;
+        if (v >= 0)  return 0.20;
+        return 0.0;
+      }],
+ 
+      // ── Margem Líquida (peso 10) — maior é melhor, ideal > 10% ──────────
+      ['margemLiquida', 10, (v) => {
+        const min = filters.margemLiquidaMin;
+        if (min != null && v >= min) return Math.min(1.0, 0.7 + (v - min) / (min * 2) * 0.3);
+        if (v >= 25) return 0.95;
+        if (v >= 15) return 0.85;
+        if (v >= 10) return 0.70;
+        if (v >= 5)  return 0.45;
+        if (v >= 0)  return 0.20;
+        return 0.0;
+      }],
+ 
+      // ── Margem EBIT (peso 5) — maior é melhor, ideal > 10% ───────────────
+      ['margemEbit', 5, (v) => {
+        if (v >= 25) return 0.95;
+        if (v >= 15) return 0.80;
+        if (v >= 10) return 0.65;
+        if (v >= 5)  return 0.40;
+        if (v >= 0)  return 0.20;
+        return 0.0;
+      }],
+ 
+      // ── Dívida/PL (peso 10) — menor é melhor, ideal < 1.0 ────────────────
+      ['dividaPl', 10, (v) => {
+        const max = filters.dividaPatrimonioMax;
+        if (max != null && v <= max) return Math.min(1.0, 0.7 + (max - v) / max * 0.3);
+        if (v <= 0.3)  return 0.95;
+        if (v <= 0.7)  return 0.85;
+        if (v <= 1.0)  return 0.70;
+        if (v <= 1.5)  return 0.50;
+        if (v <= 2.0)  return 0.30;
+        if (v <= 3.0)  return 0.15;
+        return 0.0;
+      }],
+ 
+      // ── Liquidez Corrente (peso 5) — maior é melhor, ideal > 1.5 ─────────
+      ['liquidezCorrente', 5, (v) => {
+        if (v >= 2.5) return 0.95;
+        if (v >= 1.8) return 0.85;
+        if (v >= 1.5) return 0.70;
+        if (v >= 1.0) return 0.45;
+        if (v >= 0.8) return 0.20;
+        return 0.05;
+      }],
+ 
+      // ── Crescimento de Receita (peso 5) — maior é melhor, ideal > 5% ─────
+      ['crescReceita', 5, (v) => {
+        const min = filters.crescimentoReceitaMin;
+        if (min != null && v >= min) return Math.min(1.0, 0.7 + (v - min) / (min * 2 || 20) * 0.3);
+        if (v >= 20) return 0.95;
+        if (v >= 10) return 0.80;
+        if (v >= 5)  return 0.65;
+        if (v >= 0)  return 0.45; // crescimento nulo ainda é neutro
+        if (v >= -5) return 0.25;
+        return 0.05;
+      }],
+    ];
+ 
+    let totalPoints = 0;
+    let totalWeight = 0;
+ 
+    for (const [field, weight, scoreFn] of criteria) {
+      const val = data[field];
+      if (val == null) continue; // campo ausente não penaliza nem pontua
+      totalPoints += weight * scoreFn(val);
+      totalWeight += weight;
     }
-    if (data.pvp != null) {
-      if (inRange(data.pvp, filters.pvpMin, filters.pvpMax)) score += 8;
-      else if (data.pvp < 1) score += 3; else if (data.pvp > 3) score -= 10;
-    }
-    if (data.dy != null) {
-      if (inRange(data.dy, filters.dyMin, filters.dyMax)) score += 10;
-      else if (data.dy > 6) score += 6; else if (data.dy > 4) score += 3;
-      else if (filters.dyMin && data.dy < filters.dyMin) score -= 5;
-    }
-    if (data.roe != null) {
-      if (inRange(data.roe, filters.roeMin, filters.roeMax)) score += 10;
-      else if (data.roe > 20) score += 6; else if (data.roe > 15) score += 3;
-      else if (filters.roeMin && data.roe < filters.roeMin) score -= 8;
-    }
-    if (data.roic != null) {
-      if (inRange(data.roic, filters.roicMin, filters.roicMax)) score += 7;
-      else if (data.roic > 15) score += 4;
-      else if (filters.roicMin && data.roic < filters.roicMin) score -= 5;
-    }
-    if (data.margemLiquida != null) {
-      if (inRange(data.margemLiquida, filters.margemLiquidaMin, filters.margemLiquidaMax)) score += 5;
-      else if (data.margemLiquida > 15) score += 3;
-      else if (filters.margemLiquidaMin && data.margemLiquida < filters.margemLiquidaMin) score -= 5;
-    }
-    if (data.dividaPl != null) {
-      if (inRange(data.dividaPl, filters.dividaPatrimonioMin, filters.dividaPatrimonioMax)) score += 5;
-      else if (data.dividaPl < 0.5) score += 3;
-      else if (filters.dividaPatrimonioMax && data.dividaPl > filters.dividaPatrimonioMax) score -= 12;
-      else if (data.dividaPl > 2) score -= 8;
-    }
-    if (data.crescReceita != null) {
-      if (inRange(data.crescReceita, filters.crescimentoReceitaMin, filters.crescimentoReceitaMax)) score += 5;
-      else if (data.crescReceita > 10) score += 3;
-      else if (filters.crescimentoReceitaMin && data.crescReceita < filters.crescimentoReceitaMin) score -= 5;
-    }
-    return Math.max(0, Math.min(100, score));
+ 
+    if (totalWeight === 0) return null;
+ 
+    // Score de 0–100, proporcional aos campos disponíveis
+    return Math.round((totalPoints / totalWeight) * 100);
   }
  
   getRecommendationReason(f, score, passFilters, violations) {
-    if (!passFilters && violations?.length > 0) return `Fora dos filtros: ${violations.slice(0, 2).join('; ')}`;
     const positives = [];
-    if (f.roe != null && f.roe > 15)  positives.push(`ROE forte (${f.roe.toFixed(1)}%)`);
-    if (f.dy  != null && f.dy  > 5)   positives.push(`DY atrativo (${f.dy.toFixed(1)}%)`);
-    if (f.pvp != null && f.pvp < 1)   positives.push(`P/VP < 1 (${f.pvp.toFixed(2)})`);
-    if (score >= 55 && positives.length) return positives[0];
-    if (score < 55) return 'Indicadores abaixo dos parâmetros definidos';
-    return 'Indicadores dentro dos parâmetros';
+    const negatives = [];
+ 
+    if (f.roe  != null && f.roe  >= 20)  positives.push(`ROE forte (${f.roe.toFixed(1)}%)`);
+    if (f.dy   != null && f.dy   >= 5)   positives.push(`DY atrativo (${f.dy.toFixed(1)}%)`);
+    if (f.pvp  != null && f.pvp  <= 1)   positives.push(`P/VP abaixo de 1 (${f.pvp.toFixed(2)})`);
+    if (f.pl   != null && f.pl   <= 10 && f.pl > 0) positives.push(`P/L baixo (${f.pl.toFixed(1)})`);
+    if (f.roic != null && f.roic >= 15)  positives.push(`ROIC alto (${f.roic.toFixed(1)}%)`);
+    if (f.margemLiquida != null && f.margemLiquida >= 15) positives.push(`Margem líquida forte (${f.margemLiquida.toFixed(1)}%)`);
+ 
+    if (f.dividaPl != null && f.dividaPl > 2.5) negatives.push(`Dívida elevada (${f.dividaPl.toFixed(1)}x PL)`);
+    if (f.roe  != null && f.roe  < 5)   negatives.push(`ROE fraco (${f.roe.toFixed(1)}%)`);
+    if (f.dy   != null && f.dy   < 2)   negatives.push(`DY baixo (${f.dy.toFixed(1)}%)`);
+ 
+    if (violations?.length > 0) negatives.push(...violations.slice(0, 2));
+ 
+    if (score >= 80) {
+      return positives.length > 0
+        ? positives.slice(0, 2).join(' · ')
+        : 'Excelente combinação de indicadores';
+    }
+    if (score >= 60) {
+      if (positives.length > 0 && negatives.length > 0)
+        return `${positives[0]} · ${negatives[0]}`;
+      if (positives.length > 0) return positives[0];
+      return 'Indicadores razoáveis';
+    }
+    return negatives.length > 0
+      ? negatives.slice(0, 2).join(' · ')
+      : 'Indicadores abaixo do esperado';
   }
  
   calcPosition(asset, currentPx) {
