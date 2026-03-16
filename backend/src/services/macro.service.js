@@ -50,12 +50,16 @@ class MacroService {
       const analysis = await this.generateAnalysis(apiKey);
       console.log(`[Macro] Groq retornou — isDefault=${analysis.isDefault}`);
 
-      // Salvar no banco
-      await pool.query(
-        'INSERT INTO macro_analysis (user_id, analysis_data) VALUES ($1, $2)',
-        [userId, JSON.stringify(analysis)]
-      );
-      console.log('[Macro] Análise salva no banco');
+      // Salvar no banco — JSONB aceita objeto diretamente via pg driver
+      try {
+        await pool.query(
+          'INSERT INTO macro_analysis (user_id, analysis_data) VALUES ($1, $2::jsonb)',
+          [userId, JSON.stringify(analysis)]
+        );
+        console.log('[Macro] Análise salva no banco ✅');
+      } catch (insertErr) {
+        console.error('[Macro] Falha ao salvar no banco (análise ainda será retornada):', insertErr.message);
+      }
 
       return analysis;
     } catch (error) {
