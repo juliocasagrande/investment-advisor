@@ -204,18 +204,6 @@ async function getUserSettings(userId) {
 const ANALYZABLE_CATEGORIES = new Set(['stocks_br', 'fiis', 'etfs', 'acoes_br']);
 const US_CATEGORIES = new Set(['stocks_us', 'reits']);
  
-// Executa um array de funções assíncronas em grupos de `concurrency`
-async function runConcurrent(tasks, concurrency = 5) {
-  const results = [];
-  for (let i = 0; i < tasks.length; i += concurrency) {
-    const batch = tasks.slice(i, i + concurrency);
-    const batchResults = await Promise.allSettled(batch.map(fn => fn()));
-    results.push(...batchResults);
-    if (i + concurrency < tasks.length) await new Promise(r => setTimeout(r, 500));
-  }
-  return results;
-}
- 
 class ScreenerController {
  
   // ── Buscar ativos com filtros (aba Buscar) ────────────────────────────────
@@ -248,19 +236,19 @@ class ScreenerController {
   }
  
   // ── Buscar lista de ativos via Yahoo Finance (BR ou US) ───────────────────
-  // Usa paralelismo de 5 em 5 para velocidade sem rate limit
+  // Sequencial com delay — Yahoo Finance rejeita requisições paralelas com mesmo crumb
   async fetchStocksYahoo(list, filters, isUS = false) {
     const unique = [...new Set(list)];
     const results = [];
  
-    const tasks = unique.map(ticker => async () => {
+    for (const ticker of unique) {
       try {
         const yData = isUS ? await yahooGetUS(ticker) : await yahooGetBR(ticker);
         const priceModule = yData.price || {};
         const fundamentals = this.extractYahooFundamentals(yData);
         const passFilters = this.applyFilters(fundamentals, filters);
         const score = this.calculateScore(fundamentals, filters) ?? 50;
-        return {
+        results.push({
           ticker,
           name: priceModule.longName || priceModule.shortName || ticker,
           price: priceModule.regularMarketPrice ?? null,
@@ -271,16 +259,12 @@ class ScreenerController {
           score,
           passFilters,
           recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
-        };
+        });
+        console.log(`[Search] ${ticker} — score: ${score}, passFilters: ${passFilters}`);
       } catch (e) {
-        console.error(`Erro Yahoo ${ticker}:`, e.message);
-        return null;
+        console.error(`[Search] Erro ${ticker}:`, e.message);
       }
-    });
- 
-    const settled = await runConcurrent(tasks, 5);
-    for (const r of settled) {
-      if (r.status === 'fulfilled' && r.value) results.push(r.value);
+      await new Promise(r => setTimeout(r, 350));
     }
     return results;
   }
