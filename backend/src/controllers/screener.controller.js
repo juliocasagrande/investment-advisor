@@ -1,18 +1,18 @@
 const pool = require('../config/database');
 const axios = require('axios'); // mantido apenas para Groq (POST)
- 
+
 // ── Yahoo Finance — Cookie + Crumb ────────────────────────────────────────────
 // O Yahoo Finance exige um fluxo de autenticação de dois passos:
 // 1. GET https://fc.yahoo.com  → cookie de sessão
 // 2. GET https://query2.finance.yahoo.com/v1/test/getcrumb (com o cookie) → crumb
 // 3. Todas as chamadas usam Cookie + &crumb=<valor>
 // Cookie/crumb ficam cacheados 55 min e renovam automaticamente.
- 
+
 let _yahooCookie = null;
 let _yahooCrumb  = null;
 let _yahooLastFetch = 0;
 const CRUMB_TTL = 55 * 60 * 1000;
- 
+
 const YAHOO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'application/json, text/plain, */*',
@@ -20,7 +20,7 @@ const YAHOO_HEADERS = {
   'Origin': 'https://finance.yahoo.com',
   'Referer': 'https://finance.yahoo.com/',
 };
- 
+
 async function getYahooCrumb(force = false) {
   const now = Date.now();
   if (!force && _yahooCrumb && (now - _yahooLastFetch) < CRUMB_TTL) {
@@ -42,7 +42,7 @@ async function getYahooCrumb(force = false) {
   console.log('[Yahoo] Cookie/crumb renovados.');
   return { cookie: cookieStr, crumb };
 }
- 
+
 // Busca genérica Yahoo — BR usa sufixo .SA, US sem sufixo
 async function yahooGet(symbol) {
   const modules = 'defaultKeyStatistics,financialData,summaryDetail,price,calendarEvents';
@@ -60,10 +60,10 @@ async function yahooGet(symbol) {
     return result;
   }
 }
- 
+
 const yahooGetBR = (ticker) => yahooGet(ticker.endsWith('.SA') ? ticker : `${ticker}.SA`);
 const yahooGetUS = (ticker) => yahooGet(ticker); // US sem sufixo
- 
+
 // ── Auto-healing ──────────────────────────────────────────────────────────────
 async function ensureColumns() {
   const stmts = [
@@ -86,82 +86,145 @@ async function ensureColumns() {
 }
 ensureColumns().catch(e => console.error('screener ensureColumns:', e.message));
 
-// ── Listas de ativos ──────────────────────────────────────────────────────────
+// ── Listas de ativos e mapa de setores ───────────────────────────────────────
+// O mapa de setores é estático (baseado na lista do usuário) pois o Yahoo Finance
+// não retorna summaryProfile nos módulos gratuitos de forma confiável.
+
+const SECTOR_MAP = {
+  // Bancos e Financeiras
+  'ITUB4':'Financeiro','BBDC4':'Financeiro','BBAS3':'Financeiro','SANB11':'Financeiro',
+  'ITSA4':'Financeiro','BPAC11':'Financeiro','BBSE3':'Financeiro','B3SA3':'Financeiro',
+  'PSSA3':'Financeiro','CIEL3':'Financeiro','IRBR3':'Financeiro','CARD3':'Financeiro',
+  'WIZC3':'Financeiro','PORT3':'Financeiro','CASH3':'Financeiro',
+  // Petróleo e Gás
+  'PETR4':'Petróleo e Gás','PETR3':'Petróleo e Gás','PRIO3':'Petróleo e Gás',
+  'RRRP3':'Petróleo e Gás','RECV3':'Petróleo e Gás','CSAN3':'Petróleo e Gás',
+  'RAIZ4':'Petróleo e Gás','UGPA3':'Petróleo e Gás','VBBR3':'Petróleo e Gás',
+  // Energia Elétrica
+  'ELET3':'Energia','ELET6':'Energia','CMIG4':'Energia','CPFE3':'Energia',
+  'EGIE3':'Energia','TAEE11':'Energia','ENBR3':'Energia','AESB3':'Energia',
+  'EQTL3':'Energia','TRPL4':'Energia','ALUP11':'Energia','ENGI11':'Energia',
+  'CPLE6':'Energia','NEOE3':'Energia','MEGA3':'Energia',
+  // Mineração e Siderurgia
+  'VALE3':'Mineração','GGBR4':'Siderurgia','CSNA3':'Siderurgia','USIM5':'Siderurgia',
+  'GOAU4':'Siderurgia','CMIN3':'Mineração','BRAP4':'Mineração',
+  // Papel e Celulose
+  'SUZB3':'Papel e Celulose','KLBN11':'Papel e Celulose','RANI3':'Papel e Celulose',
+  // Indústria
+  'WEGE3':'Indústria','EMBR3':'Indústria','TUPY3':'Indústria','ROMI3':'Indústria',
+  'POMO4':'Indústria','KEPL3':'Indústria',
+  // Logística e Transporte
+  'RAIL3':'Logística','CCRO3':'Logística','ECOR3':'Logística','LOGG3':'Logística',
+  'JSLG3':'Logística','MOVI3':'Logística','SIMH3':'Logística','HBSA3':'Logística',
+  // Varejo
+  'LREN3':'Varejo','ARZZ3':'Varejo','SOMA3':'Varejo','VIVA3':'Varejo',
+  'CEAB3':'Varejo','GUAR3':'Varejo','MGLU3':'Varejo','VIIA3':'Varejo',
+  'AMER3':'Varejo','BHIA3':'Varejo','PETZ3':'Varejo','GMAT3':'Varejo','CAMB3':'Varejo',
+  // Consumo e Alimentos
+  'ABEV3':'Consumo','BRFS3':'Alimentos','MRFG3':'Alimentos','JBSS3':'Alimentos',
+  'MDIA3':'Alimentos','SMTO3':'Alimentos','SLCE3':'Alimentos','BEEF3':'Alimentos',
+  'CRFB3':'Consumo','ASAI3':'Consumo','PCAR3':'Consumo','CAML3':'Alimentos',
+  // Saúde
+  'RDOR3':'Saúde','HAPV3':'Saúde','QUAL3':'Saúde','FLRY3':'Saúde',
+  'DASA3':'Saúde','ODPV3':'Saúde','HYPE3':'Saúde','VVEO3':'Saúde','MATD3':'Saúde',
+  // Tecnologia
+  'TOTS3':'Tecnologia','POSI3':'Tecnologia','LWSA3':'Tecnologia','SQIA3':'Tecnologia',
+  // Telecom
+  'VIVT3':'Telecom','TIMS3':'Telecom','OIBR3':'Telecom',
+  // Construção
+  'MRVE3':'Construção','EZTC3':'Construção','EVEN3':'Construção','CYRE3':'Construção',
+  'DIRR3':'Construção','TEND3':'Construção','TRIS3':'Construção','JHSF3':'Construção',
+  'HBOR3':'Construção','LAVV3':'Construção','CURY3':'Construção','PLPL3':'Construção',
+  // Shoppings
+  'MULT3':'Shoppings','IGTI11':'Shoppings','ALSO3':'Shoppings','BRML3':'Shoppings',
+  // Saneamento
+  'SBSP3':'Saneamento','SAPR11':'Saneamento','CSMG3':'Saneamento',
+  // Diversificados
+  'GRND3':'Diversificado','NTCO3':'Diversificado','ALPA4':'Diversificado',
+  'MYPK3':'Diversificado','FRAS3':'Diversificado','RAPT4':'Diversificado',
+  // FIIs por tipo
+  'MXRF11':'FII - Papel','CPTS11':'FII - Papel','KNCR11':'FII - Papel',
+  'KNIP11':'FII - Papel','HGLG11':'FII - Logístico','BTLG11':'FII - Logístico',
+  'XPLG11':'FII - Logístico','VILG11':'FII - Logístico','XPML11':'FII - Shopping',
+  'VISC11':'FII - Shopping','HSML11':'FII - Shopping','HGBS11':'FII - Shopping',
+  'KNRI11':'FII - Híbrido','HGRE11':'FII - Escritório','BRCR11':'FII - Escritório',
+  'RBHG11':'FII - Híbrido','RBRF11':'FII - FoF','KFOF11':'FII - FoF',
+  'MGFF11':'FII - FoF','HFOF11':'FII - FoF','IRDM11':'FII - Papel',
+  'VGIP11':'FII - Papel','RECR11':'FII - Papel','RBRP11':'FII - Híbrido',
+  'LVBI11':'FII - Logístico','GGRC11':'FII - Logístico','BTCR11':'FII - Papel',
+  'PATL11':'FII - Logístico','TRXF11':'FII - Logístico','BLMG11':'FII - Logístico',
+  'HSLG11':'FII - Logístico','MCCI11':'FII - Papel','KNHY11':'FII - Papel',
+  'DEVA11':'FII - Papel','PLCR11':'FII - Papel','CVBI11':'FII - Papel',
+  'KNSC11':'FII - Papel','VGIR11':'FII - Papel','MALL11':'FII - Shopping',
+  'PVBI11':'FII - Escritório','JSRE11':'FII - Escritório','BCRI11':'FII - Papel',
+  'HGPO11':'FII - Escritório','RNGO11':'FII - Escritório','BCFF11':'FII - FoF',
+  'XPSF11':'FII - FoF',
+};
+
+// Mapa de setores para ações US (Yahoo Finance sector em inglês)
+const US_SECTOR_MAP = {
+  'AAPL':'Tecnologia','MSFT':'Tecnologia','GOOGL':'Tecnologia','AMZN':'Consumo',
+  'NVDA':'Tecnologia','META':'Tecnologia','TSLA':'Consumo','BRK-B':'Financeiro',
+  'JPM':'Financeiro','JNJ':'Saúde','V':'Financeiro','PG':'Consumo','UNH':'Saúde',
+  'HD':'Consumo','MA':'Financeiro','DIS':'Entretenimento','BAC':'Financeiro',
+  'XOM':'Energia','PFE':'Saúde','KO':'Consumo','WMT':'Varejo','CSCO':'Tecnologia',
+  'VZ':'Telecom','INTC':'Tecnologia','NFLX':'Entretenimento','ADBE':'Tecnologia',
+  'CRM':'Tecnologia','AMD':'Tecnologia','PYPL':'Financeiro','QCOM':'Tecnologia',
+  'T':'Telecom','PEP':'Consumo','COST':'Varejo','ABBV':'Saúde','AVGO':'Tecnologia',
+  'ORCL':'Tecnologia','TXN':'Tecnologia','LIN':'Indústria','ACN':'Tecnologia',
+  'NKE':'Consumo','MCD':'Consumo','DHR':'Saúde','ABT':'Saúde','WFC':'Financeiro',
+  'LOW':'Consumo','NEE':'Energia','PM':'Consumo','RTX':'Defesa','HON':'Indústria',
+  'IBM':'Tecnologia','AMAT':'Tecnologia','SBUX':'Consumo','INTU':'Tecnologia',
+  'ISRG':'Saúde','CAT':'Indústria','GE':'Indústria','NOW':'Tecnologia',
+  'BKNG':'Turismo','MDT':'Saúde',
+  // REITs
+  'O':'REIT - Varejo','SPG':'REIT - Shopping','PLD':'REIT - Industrial',
+  'AMT':'REIT - Torre','CCI':'REIT - Torre','EQIX':'REIT - Data Center',
+  'PSA':'REIT - Self-Storage','DLR':'REIT - Data Center','VICI':'REIT - Cassino',
+  'WPC':'REIT - Diversificado','NNN':'REIT - Varejo','EXR':'REIT - Self-Storage',
+  'AVB':'REIT - Residencial','EQR':'REIT - Residencial','MAA':'REIT - Residencial',
+  'UDR':'REIT - Residencial','CPT':'REIT - Residencial','KIM':'REIT - Shopping',
+  'REG':'REIT - Shopping','WELL':'REIT - Saúde','VTR':'REIT - Saúde',
+  'DOC':'REIT - Saúde','HR':'REIT - Saúde','FR':'REIT - Industrial',
+  'EGP':'REIT - Industrial','FRT':'REIT - Varejo','BXP':'REIT - Escritório',
+  'KRG':'REIT - Shopping','STOR':'REIT - Diversificado','SRC':'REIT - Diversificado',
+  'ADC':'REIT - Varejo',
+};
 
 const STOCKS_BR = [
-  // Bancos e Financeiras
   'ITUB4','BBDC4','BBAS3','SANB11','ITSA4','BPAC11','BBSE3','B3SA3','PSSA3','CIEL3',
   'IRBR3','CARD3','WIZC3','PORT3','CASH3',
-
-  // Petróleo, Gás e Energia
   'PETR4','PETR3','PRIO3','RRRP3','RECV3',
   'CSAN3','RAIZ4','UGPA3','VBBR3',
   'ELET3','ELET6','CMIG4','CPFE3','EGIE3','TAEE11','ENBR3','AESB3','EQTL3','TRPL4',
   'ALUP11','ENGI11','CPLE6','NEOE3','MEGA3',
-
-  // Mineração e Siderurgia
   'VALE3','GGBR4','CSNA3','USIM5','GOAU4','CMIN3','BRAP4',
-
-  // Papel e Celulose
   'SUZB3','KLBN11','RANI3',
-
-  // Indústria e Bens de Capital
   'WEGE3','EMBR3','TUPY3','ROMI3','POMO4','KEPL3',
-
-  // Logística e Transporte
   'RAIL3','CCRO3','ECOR3','LOGG3','JSLG3','MOVI3','SIMH3','HBSA3',
-
-  // Varejo
   'LREN3','ARZZ3','SOMA3','VIVA3','CEAB3','GUAR3',
   'MGLU3','VIIA3','AMER3','BHIA3',
   'PETZ3','GMAT3','CAMB3',
-
-  // Consumo e Alimentos
   'ABEV3','BRFS3','MRFG3','JBSS3','MDIA3','SMTO3','SLCE3',
   'BEEF3','CRFB3','ASAI3','PCAR3','CAML3',
-
-  // Saúde
   'RDOR3','HAPV3','QUAL3','FLRY3','DASA3','ODPV3','HYPE3','VVEO3','MATD3',
-
-  // Tecnologia
   'TOTS3','POSI3','LWSA3','SQIA3',
-
-  // Telecom
   'VIVT3','TIMS3','OIBR3',
-
-  // Construção e Imobiliário
   'MRVE3','EZTC3','EVEN3','CYRE3','DIRR3','TEND3','TRIS3',
   'JHSF3','HBOR3','LAVV3','CURY3','PLPL3',
-
-  // Shoppings
-  'MULT3','IGTI11','ALSO3','BRML3','JHSF3',
-
-  // Saneamento
+  'MULT3','IGTI11','ALSO3','BRML3',
   'SBSP3','SAPR11','CSMG3',
-
-  // Diversificados
-  'GRND3','NTCO3','ALPA4','MYPK3','FRAS3','RAPT4'
+  'GRND3','NTCO3','ALPA4','MYPK3','FRAS3','RAPT4',
 ];
 
 const FIIS = [
   'MXRF11','CPTS11','KNCR11','KNIP11','HGLG11','BTLG11','XPLG11','VILG11',
   'XPML11','VISC11','HSML11','HGBS11','KNRI11','HGRE11','BRCR11','RBHG11',
   'RBRF11','KFOF11','MGFF11','HFOF11','IRDM11','VGIP11','RECR11','RBRP11',
-
-  // Logísticos
   'LVBI11','GGRC11','BTCR11','PATL11','TRXF11','BLMG11','HSLG11',
-
-  // Papel
   'MCCI11','KNHY11','DEVA11','PLCR11','CVBI11','KNSC11','VGIR11',
-
-  // Shoppings
-  'MALL11','HSML11','VISC11','XPML11',
-
-  // Escritórios
-  'PVBI11','JSRE11','BCRI11','HGPO11','RNGO11',
-
-  // FoFs
-  'BCFF11','RBRF11','XPSF11','HFOF11'
+  'MALL11','PVBI11','JSRE11','BCRI11','HGPO11','RNGO11',
+  'BCFF11','XPSF11',
 ];
 
 const STOCKS_US = [
@@ -170,42 +233,30 @@ const STOCKS_US = [
   'WMT','CSCO','VZ','INTC','NFLX','ADBE','CRM','AMD','PYPL','QCOM',
   'T','PEP','COST','ABBV','AVGO','ORCL','TXN','LIN','ACN','NKE',
   'MCD','DHR','ABT','WFC','LOW','NEE','PM','RTX','HON','IBM',
-  'AMAT','SBUX','INTU','ISRG','CAT','GE','NOW','BKNG','MDT'
+  'AMAT','SBUX','INTU','ISRG','CAT','GE','NOW','BKNG','MDT',
 ];
 
 const REITS = [
   'O','SPG','PLD','AMT','CCI','EQIX','PSA','DLR','VICI','WPC',
   'NNN','EXR','AVB','EQR','MAA','UDR','CPT','KIM','REG',
-
-  // Data centers
-  'DLR','EQIX',
-
-  // Healthcare
   'WELL','VTR','DOC','HR',
-
-  // Industrial
-  'PLD','FR','EGP',
-
-  // Retail
+  'FR','EGP',
   'FRT','BXP','KRG',
-
-  // Diversified
-  'STOR','SRC','ADC'
+  'ADC',
 ];
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 async function getUserSettings(userId) {
   try {
     const r = await pool.query('SELECT brapi_token, alphavantage_key, groq_api_key FROM user_settings WHERE user_id = $1', [userId]);
     return r.rows[0] || {};
   } catch (e) { return {}; }
 }
- 
+
 const ANALYZABLE_CATEGORIES = new Set(['stocks_br', 'fiis', 'etfs', 'acoes_br']);
 const US_CATEGORIES = new Set(['stocks_us', 'reits']);
- 
+
 class ScreenerController {
- 
+
   // ── Buscar ativos com filtros (aba Buscar) ────────────────────────────────
   async search(req, res) {
     try {
@@ -213,16 +264,16 @@ class ScreenerController {
       const { filters = {}, assetClass = 'stocks_br' } = req.body;
       const settings = await getUserSettings(userId);
       const groqKey = settings.groq_api_key || process.env.GROQ_API_KEY;
- 
+
       // Tudo via Yahoo Finance — sem necessidade de tokens externos
       const listMap = { stocks_br: STOCKS_BR, fiis: FIIS, stocks_us: STOCKS_US, reits: REITS };
       const list = listMap[assetClass] || STOCKS_BR;
       const isUS = assetClass === 'stocks_us' || assetClass === 'reits';
- 
+
       const stocks = await this.fetchStocksYahoo(list, filters, isUS);
       stocks.sort((a, b) => (b.score || 0) - (a.score || 0));
       const passed = stocks.filter(r => r.passFilters);
- 
+
       let aiAnalysis = null;
       if (groqKey && passed.length > 0) {
         try { aiAnalysis = await this.getAIRecommendation(groqKey, passed.slice(0, 10), filters); }
@@ -234,13 +285,13 @@ class ScreenerController {
       return res.status(500).json({ error: 'Erro ao buscar ações: ' + error.message });
     }
   }
- 
+
   // ── Buscar lista de ativos via Yahoo Finance (BR ou US) ───────────────────
   // Sequencial com delay — Yahoo Finance rejeita requisições paralelas com mesmo crumb
   async fetchStocksYahoo(list, filters, isUS = false) {
     const unique = [...new Set(list)];
     const results = [];
- 
+
     for (const ticker of unique) {
       try {
         const yData = isUS ? await yahooGetUS(ticker) : await yahooGetBR(ticker);
@@ -248,16 +299,17 @@ class ScreenerController {
         const fundamentals = this.extractYahooFundamentals(yData);
         const score = this.calculateScore(fundamentals, filters) ?? 50;
         // passFilters = score >= 80: o score combinado É o critério de compra.
-        // applyFilters só é usado para mostrar violations informativas, não para bloquear.
         const passFilters = score >= 80;
         const violations = this.getFilterViolations(fundamentals, filters);
+        // Setor do mapa estático — mais confiável que summaryProfile do Yahoo
+        const sector = isUS ? (US_SECTOR_MAP[ticker] || null) : (SECTOR_MAP[ticker] || null);
         results.push({
           ticker,
           name: priceModule.longName || priceModule.shortName || ticker,
           price: priceModule.regularMarketPrice ?? null,
           change: priceModule.regularMarketChangePercent ?? null,
           market: isUS ? 'US' : 'BR',
-          sector: yData.summaryProfile?.sector || null,
+          sector,
           ...fundamentals,
           score,
           passFilters,
@@ -272,15 +324,18 @@ class ScreenerController {
     }
     return results;
   }
- 
+
   // ── Analisar posições do usuário ──────────────────────────────────────────
   async analyzePositions(req, res) {
     try {
       const userId = req.userId;
-      const filters = req.body?.filters && Object.keys(req.body.filters).length > 0
+      // Score sempre calculado com filtros vazios — igual à aba Buscar.
+      // Filtros do usuário usados apenas para violations informativas.
+      const scoreFilters = {};
+      const violationFilters = req.body?.filters && Object.keys(req.body.filters).length > 0
         ? req.body.filters
         : { plMin: 5, plMax: 15, pvpMin: 0.7, pvpMax: 1.8, dyMin: 4, roicMin: 8, roeMin: 10, dividaPatrimonioMax: 2 };
- 
+
       const assetsResult = await pool.query(`
         SELECT a.*, ac.category as class_category, ac.name as class_name
         FROM assets a
@@ -288,26 +343,26 @@ class ScreenerController {
         WHERE a.user_id = $1 AND a.quantity > 0
         ORDER BY (a.quantity * COALESCE(a.current_price, a.average_price)) DESC
       `, [userId]);
- 
+
       if (assetsResult.rows.length === 0) {
         return res.json({ analysis: [], summary: { manter: 0, avaliarTroca: 0, totalPositions: 0, avgQualityScore: 0 }, aiAnalysis: null });
       }
- 
+
       const settings = await getUserSettings(userId);
       const groqKey = settings.groq_api_key || process.env.GROQ_API_KEY;
- 
+
       const isBRAnalyzable = (a) =>
         ANALYZABLE_CATEGORIES.has(a.class_category) || /^[A-Z]{3,6}\d{1,2}$/.test(a.ticker);
       const isUSAnalyzable = (a) =>
         US_CATEGORIES.has(a.class_category) || /^[A-Z]{1,5}(-[A-Z])?$/.test(a.ticker);
- 
+
       const brAssets = assetsResult.rows.filter(isBRAnalyzable);
       const usAssets = assetsResult.rows.filter(a => !isBRAnalyzable(a) && isUSAnalyzable(a));
       const other    = assetsResult.rows.filter(a => !isBRAnalyzable(a) && !isUSAnalyzable(a));
- 
+
       const analysis = [];
       let manter = 0, avaliarTroca = 0, totalScore = 0, scoredCount = 0;
- 
+
       // ── Análise BR e FIIs via Yahoo Finance ───────────────────────────────
       for (const asset of brAssets) {
         try {
@@ -318,7 +373,7 @@ class ScreenerController {
           const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;
           const fundamentals = this.extractYahooFundamentals(yData);
           const hasAnyData = Object.values(fundamentals).some(v => v != null);
- 
+
           if (!hasAnyData) {
             this.pushBasicPosition(analysis, asset, 'Indicadores não disponíveis no Yahoo Finance para este ativo');
             const last = analysis[analysis.length - 1];
@@ -326,16 +381,16 @@ class ScreenerController {
             Object.assign(last, this.calcPosition(asset, currentPrice));
             continue;
           }
- 
-          const score = this.calculateScore(fundamentals, filters);
-          const passFilters = this.applyFilters(fundamentals, filters);
-          const violations  = this.getFilterViolations(fundamentals, filters);
+
+          const score        = this.calculateScore(fundamentals, scoreFilters);
+          const violations   = this.getFilterViolations(fundamentals, violationFilters);
+          const passFilters  = this.applyFilters(fundamentals, violationFilters);
           const effectiveScore = score ?? 50;
           const action = (effectiveScore >= 80) ? 'MANTER' : 'AVALIAR_TROCA';
- 
+
           if (action === 'MANTER') manter++; else avaliarTroca++;
           if (score != null) { totalScore += score; scoredCount++; }
- 
+
           const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
           analysis.push({
             ticker: asset.ticker, name,
@@ -343,7 +398,10 @@ class ScreenerController {
             currentPrice, currentValue, gainPercent,
             qualityScore: score, passFilters, violations,
             recommendation: { action, reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations) },
-            fundamentals, assetClass: asset.class_name, market: 'BR'
+            fundamentals,
+            assetClass: asset.class_name,
+            market: 'BR',
+            sector: SECTOR_MAP[asset.ticker] || null,
           });
           console.log(`[Screener] ${asset.ticker} — score: ${score}, action: ${action}`);
         } catch (e) {
@@ -356,7 +414,7 @@ class ScreenerController {
         }
         await new Promise(r => setTimeout(r, 400));
       }
- 
+
       // ── Análise EUA via Yahoo Finance (sem precisar de AlphaVantage) ──────
       for (const asset of usAssets) {
         try {
@@ -367,7 +425,7 @@ class ScreenerController {
           const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;
           const fundamentals = this.extractYahooFundamentals(yData);
           const hasAnyData = Object.values(fundamentals).some(v => v != null);
- 
+
           if (!hasAnyData) {
             this.pushBasicPosition(analysis, asset, 'Indicadores não disponíveis no Yahoo Finance para este ativo');
             const last = analysis[analysis.length - 1];
@@ -375,16 +433,16 @@ class ScreenerController {
             Object.assign(last, this.calcPosition(asset, currentPrice));
             continue;
           }
- 
-          const score = this.calculateScore(fundamentals, filters);
-          const passFilters = this.applyFilters(fundamentals, filters);
-          const violations  = this.getFilterViolations(fundamentals, filters);
+
+          const score        = this.calculateScore(fundamentals, scoreFilters);
+          const violations   = this.getFilterViolations(fundamentals, violationFilters);
+          const passFilters  = this.applyFilters(fundamentals, violationFilters);
           const effectiveScore = score ?? 50;
           const action = (effectiveScore >= 80) ? 'MANTER' : 'AVALIAR_TROCA';
- 
+
           if (action === 'MANTER') manter++; else avaliarTroca++;
           if (score != null) { totalScore += score; scoredCount++; }
- 
+
           const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
           analysis.push({
             ticker: asset.ticker, name,
@@ -392,8 +450,10 @@ class ScreenerController {
             currentPrice, currentValue, gainPercent,
             qualityScore: score, passFilters, violations,
             recommendation: { action, reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations) },
-            fundamentals, assetClass: asset.class_name, market: 'US',
-            sector: yData.summaryProfile?.sector || null
+            fundamentals,
+            assetClass: asset.class_name,
+            market: 'US',
+            sector: US_SECTOR_MAP[asset.ticker] || null,
           });
         } catch (e) {
           console.error(`[Screener] ERRO US ${asset.ticker}:`, e.message);
@@ -401,7 +461,7 @@ class ScreenerController {
         }
         await new Promise(r => setTimeout(r, 400));
       }
- 
+
       // ── Outros (renda fixa, cripto, etc.) ────────────────────────────────
       for (const asset of other) {
         const { currentValue, gainPercent } = this.calcPosition(asset, null);
@@ -416,21 +476,21 @@ class ScreenerController {
           fundamentals: null, assetClass: asset.class_name, noFundamentals: true
         });
       }
- 
+
       analysis.sort((a, b) => {
         if (!!a.noFundamentals !== !!b.noFundamentals) return a.noFundamentals ? 1 : -1;
         return (b.currentValue || 0) - (a.currentValue || 0);
       });
- 
+
       const avgScore = scoredCount > 0 ? Math.round(totalScore / scoredCount) : 0;
- 
+
       let aiAnalysis = null;
       const scoredPositions = analysis.filter(a => !a.noFundamentals && a.qualityScore != null);
       if (groqKey && scoredPositions.length > 0) {
         try { aiAnalysis = await this.getAIPortfolioAnalysis(groqKey, scoredPositions, filters); }
         catch (e) { console.error('Groq portfolio error:', e.message); }
       }
- 
+
       return res.json({
         analysis,
         summary: { manter, avaliarTroca, totalPositions: analysis.length, avgQualityScore: avgScore },
@@ -441,7 +501,7 @@ class ScreenerController {
       return res.status(500).json({ error: 'Erro ao analisar posições: ' + error.message });
     }
   }
- 
+
   // ── Sugestões de troca ────────────────────────────────────────────────────
   async getSuggestions(req, res) {
     try {
@@ -466,7 +526,7 @@ class ScreenerController {
       return res.status(500).json({ error: 'Erro ao buscar sugestões' });
     }
   }
- 
+
   async getFundamentals(req, res) {
     try {
       const { ticker } = req.params;
@@ -484,7 +544,7 @@ class ScreenerController {
       return res.status(500).json({ error: 'Erro ao buscar dados: ' + error.message });
     }
   }
- 
+
   async saveFilters(req, res) {
     try {
       const { name, filters } = req.body;
@@ -492,14 +552,14 @@ class ScreenerController {
       return res.json({ message: 'Filtros salvos' });
     } catch (error) { return res.status(500).json({ error: 'Erro ao salvar' }); }
   }
- 
+
   async listFilters(req, res) {
     try {
       const result = await pool.query('SELECT * FROM screener_filters WHERE user_id = $1', [req.userId]);
       return res.json({ filters: result.rows });
     } catch (error) { return res.status(500).json({ error: 'Erro ao listar' }); }
   }
- 
+
   // ── Extração de fundamentals — Yahoo Finance ──────────────────────────────
   // Com formatted=false, campos chegam como número direto.
   // Alguns módulos ainda retornam { raw, fmt } — n() trata os dois casos.
@@ -509,7 +569,7 @@ class ScreenerController {
     const fd = yData.financialData        || {};
     const sd = yData.summaryDetail        || {};
     const ce = yData.calendarEvents       || {};
- 
+
     const n = (v) => {
       if (v == null) return null;
       const val = typeof v === 'object' ? (v.raw ?? v.fmt) : v;
@@ -517,7 +577,7 @@ class ScreenerController {
       return isNaN(f) || !isFinite(f) ? null : f;
     };
     const pct = (v) => { const x = n(v); return x != null ? x * 100 : null; };
- 
+
     // Converte timestamp Unix (segundos) ou objeto { raw } para ISO date string
     const toDate = (v) => {
       if (v == null) return null;
@@ -528,7 +588,7 @@ class ScreenerController {
       const d = new Date(ms);
       return isNaN(d.getTime()) ? null : d.toISOString().split('T')[0];
     };
- 
+
     const pl      = n(sd.trailingPE) ?? n(ks.forwardPE) ?? n(sd.forwardPE);
     const pvp     = n(ks.priceToBook);
     const dy      = (() => {
@@ -545,20 +605,20 @@ class ScreenerController {
     const roic             = pct(fd.returnOnAssets);
     const dividaPl         = (() => { const v = n(fd.debtToEquity); return v != null ? v / 100 : null; })();
     const crescReceita     = pct(fd.revenueGrowth);
- 
+
     // Datas de dividendo — calendarEvents
     // exDividendDate: data ex-dividendo (precisa ter a ação ANTES desta data para receber)
     // dividendDate:   data de pagamento efetivo
     const exDividendDate = toDate(ce.exDividendDate) ?? toDate(sd.exDividendDate) ?? toDate(ks.lastDividendDate);
     const dividendDate   = toDate(ce.dividendDate);
- 
+
     return {
       pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida,
       liquidezCorrente, roic, roe, dividaPl, crescReceita,
       exDividendDate, dividendDate
     };
   }
- 
+
   // ── Filtros ───────────────────────────────────────────────────────────────
   applyFilters(data, filters) {
     if (!filters || Object.keys(filters).length === 0) return true;
@@ -581,7 +641,7 @@ class ScreenerController {
     }
     return true;
   }
- 
+
   getFilterViolations(data, filters) {
     const violations = [];
     const checks = [
@@ -603,7 +663,7 @@ class ScreenerController {
     }
     return violations;
   }
- 
+
   // ── Score combinado (0–100) ───────────────────────────────────────────────
   // Cada indicador contribui com pontos dentro do seu peso máximo.
   // A pontuação de cada campo é proporcional à qualidade do valor — não binária.
@@ -618,11 +678,11 @@ class ScreenerController {
                     data.margemLiquida, data.dividaPl, data.crescReceita,
                     data.liquidezCorrente].some(v => v != null);
     if (!hasAny) return null;
- 
+
     // Cada entrada: [campo, peso, fn pontuação → 0.0 a 1.0]
     // A fn recebe o valor e os filtros e retorna quanto do peso máximo ganhou.
     const criteria = [
- 
+
       // ── P/L (peso 15) — menor é melhor, ideal 5–12 ────────────────────────
       ['pl', 15, (v) => {
         if (v <= 0) return 0;
@@ -635,7 +695,7 @@ class ScreenerController {
         if (v <= 30) return 0.20;
         return 0.05;
       }],
- 
+
       // ── P/VP (peso 10) — menor é melhor, ideal 0.5–1.5 ──────────────────
       ['pvp', 10, (v) => {
         const min = filters.pvpMin, max = filters.pvpMax;
@@ -648,7 +708,7 @@ class ScreenerController {
         if (v <= 3.5)  return 0.20;
         return 0.05;
       }],
- 
+
       // ── Dividend Yield (peso 15) — maior é melhor, ideal > 5% ────────────
       ['dy', 15, (v) => {
         const min = filters.dyMin;
@@ -660,7 +720,7 @@ class ScreenerController {
         if (v >= 1)  return 0.25;
         return 0.10;
       }],
- 
+
       // ── ROE (peso 15) — maior é melhor, ideal > 15% ──────────────────────
       ['roe', 15, (v) => {
         const min = filters.roeMin;
@@ -673,7 +733,7 @@ class ScreenerController {
         if (v >= 0)  return 0.15;
         return 0.0; // ROE negativo penaliza
       }],
- 
+
       // ── ROIC/ROA (peso 10) — maior é melhor, ideal > 8% ─────────────────
       ['roic', 10, (v) => {
         const min = filters.roicMin;
@@ -685,7 +745,7 @@ class ScreenerController {
         if (v >= 0)  return 0.20;
         return 0.0;
       }],
- 
+
       // ── Margem Líquida (peso 10) — maior é melhor, ideal > 10% ──────────
       ['margemLiquida', 10, (v) => {
         const min = filters.margemLiquidaMin;
@@ -697,7 +757,7 @@ class ScreenerController {
         if (v >= 0)  return 0.20;
         return 0.0;
       }],
- 
+
       // ── Margem EBIT (peso 5) — maior é melhor, ideal > 10% ───────────────
       ['margemEbit', 5, (v) => {
         if (v >= 25) return 0.95;
@@ -707,7 +767,7 @@ class ScreenerController {
         if (v >= 0)  return 0.20;
         return 0.0;
       }],
- 
+
       // ── Dívida/PL (peso 10) — menor é melhor, ideal < 1.0 ────────────────
       ['dividaPl', 10, (v) => {
         const max = filters.dividaPatrimonioMax;
@@ -720,7 +780,7 @@ class ScreenerController {
         if (v <= 3.0)  return 0.15;
         return 0.0;
       }],
- 
+
       // ── Liquidez Corrente (peso 5) — maior é melhor, ideal > 1.5 ─────────
       ['liquidezCorrente', 5, (v) => {
         if (v >= 2.5) return 0.95;
@@ -730,7 +790,7 @@ class ScreenerController {
         if (v >= 0.8) return 0.20;
         return 0.05;
       }],
- 
+
       // ── Crescimento de Receita (peso 5) — maior é melhor, ideal > 5% ─────
       ['crescReceita', 5, (v) => {
         const min = filters.crescimentoReceitaMin;
@@ -743,40 +803,40 @@ class ScreenerController {
         return 0.05;
       }],
     ];
- 
+
     let totalPoints = 0;
     let totalWeight = 0;
- 
+
     for (const [field, weight, scoreFn] of criteria) {
       const val = data[field];
       if (val == null) continue; // campo ausente não penaliza nem pontua
       totalPoints += weight * scoreFn(val);
       totalWeight += weight;
     }
- 
+
     if (totalWeight === 0) return null;
- 
+
     // Score de 0–100, proporcional aos campos disponíveis
     return Math.round((totalPoints / totalWeight) * 100);
   }
- 
+
   getRecommendationReason(f, score, passFilters, violations) {
     const positives = [];
     const negatives = [];
- 
+
     if (f.roe  != null && f.roe  >= 20)  positives.push(`ROE forte (${f.roe.toFixed(1)}%)`);
     if (f.dy   != null && f.dy   >= 5)   positives.push(`DY atrativo (${f.dy.toFixed(1)}%)`);
     if (f.pvp  != null && f.pvp  <= 1)   positives.push(`P/VP abaixo de 1 (${f.pvp.toFixed(2)})`);
     if (f.pl   != null && f.pl   <= 10 && f.pl > 0) positives.push(`P/L baixo (${f.pl.toFixed(1)})`);
     if (f.roic != null && f.roic >= 15)  positives.push(`ROIC alto (${f.roic.toFixed(1)}%)`);
     if (f.margemLiquida != null && f.margemLiquida >= 15) positives.push(`Margem líquida forte (${f.margemLiquida.toFixed(1)}%)`);
- 
+
     if (f.dividaPl != null && f.dividaPl > 2.5) negatives.push(`Dívida elevada (${f.dividaPl.toFixed(1)}x PL)`);
     if (f.roe  != null && f.roe  < 5)   negatives.push(`ROE fraco (${f.roe.toFixed(1)}%)`);
     if (f.dy   != null && f.dy   < 2)   negatives.push(`DY baixo (${f.dy.toFixed(1)}%)`);
- 
+
     if (violations?.length > 0) negatives.push(...violations.slice(0, 2));
- 
+
     if (score >= 80) {
       return positives.length > 0
         ? positives.slice(0, 2).join(' · ')
@@ -792,7 +852,7 @@ class ScreenerController {
       ? negatives.slice(0, 2).join(' · ')
       : 'Indicadores abaixo do esperado';
   }
- 
+
   calcPosition(asset, currentPx) {
     const avgPrice = parseFloat(asset.average_price) || 0;
     const qty      = parseFloat(asset.quantity) || 0;
@@ -802,7 +862,7 @@ class ScreenerController {
     const gainPercent  = invested > 0 ? ((currentValue - invested) / invested) * 100 : 0;
     return { currentValue, gainPercent };
   }
- 
+
   pushBasicPosition(analysis, asset, reason) {
     const { currentValue, gainPercent } = this.calcPosition(asset, null);
     analysis.push({
@@ -816,7 +876,7 @@ class ScreenerController {
       fundamentals: {}, assetClass: asset.class_name, noFundamentals: true
     });
   }
- 
+
   async getAIRecommendation(apiKey, stocks, filters) {
     const summary = stocks.slice(0, 8).map(s =>
       `${s.ticker}(${s.market||'BR'}): Score=${s.score}, P/L=${s.pl?.toFixed(1)??'-'}, DY=${s.dy?.toFixed(1)??'-'}%, ROE=${s.roe?.toFixed(1)??'-'}%`
@@ -831,7 +891,7 @@ class ScreenerController {
     const clean = content.trim().replace(/```json\s*/g,'').replace(/```\s*/g,'');
     return JSON.parse((clean.match(/\{[\s\S]*\}/) || [clean])[0]);
   }
- 
+
   async getAIPortfolioAnalysis(apiKey, positions, filters) {
     const summary = positions.slice(0, 12).map(p => {
       const v = p.violations?.length > 0 ? ` | Viola: ${p.violations.join(', ')}` : '';
@@ -853,5 +913,5 @@ class ScreenerController {
     return JSON.parse((clean.match(/\{[\s\S]*\}/) || [clean])[0]);
   }
 }
- 
+
 module.exports = new ScreenerController();
