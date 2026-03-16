@@ -129,6 +129,8 @@ function cleanClassName(name) {
 
 function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', disabled = false }) {
   const [open, setOpen] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState({});
+  const buttonRef = useRef(null);
   const ref = useRef(null);
 
   useEffect(() => {
@@ -137,14 +139,30 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  const handleOpen = () => {
+    if (disabled) return;
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setDropdownStyle({
+        position: 'fixed',
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: rect.width,
+        zIndex: 9999,
+      });
+    }
+    setOpen(!open);
+  };
+
   const selected = options.find(o => String(o.value) === String(value));
 
   return (
     <div ref={ref} className="relative">
       <button
+        ref={buttonRef}
         type="button"
         disabled={disabled}
-        onClick={() => !disabled && setOpen(!open)}
+        onClick={handleOpen}
         className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border text-left transition-all ${
           disabled
             ? 'bg-slate-800/40 border-slate-700 text-slate-500 cursor-not-allowed'
@@ -153,15 +171,20 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
             : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:border-slate-500'
         }`}
       >
-        <span className={selected ? 'text-white flex items-center gap-2' : 'text-slate-500'}>
-          {selected?.icon && <span>{selected.icon}</span>}
-          {selected ? selected.label : placeholder}
+        <span className="flex items-center gap-2 min-w-0 flex-1">
+          {selected?.icon && <span className="flex-shrink-0 text-base">{selected.icon}</span>}
+          <span className={`truncate ${selected ? 'text-white' : 'text-slate-500'}`}>
+            {selected ? selected.label : placeholder}
+          </span>
         </span>
-        <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform flex-shrink-0 ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform flex-shrink-0 ml-2 ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl z-[200] overflow-hidden max-h-64 overflow-y-auto">
+        <div
+          style={dropdownStyle}
+          className="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl overflow-hidden max-h-64 overflow-y-auto"
+        >
           {options.map((opt) => (
             <button
               key={String(opt.value)}
@@ -173,9 +196,9 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
                   : 'text-slate-300 hover:bg-slate-700 hover:text-white'
               }`}
             >
-              {opt.icon && <span className="text-base w-5 text-center">{opt.icon}</span>}
-              <span className="flex-1">{opt.label}</span>
-              {String(opt.value) === String(value) && <span className="text-emerald-400 text-xs">✓</span>}
+              {opt.icon && <span className="flex-shrink-0 text-base w-5 text-center">{opt.icon}</span>}
+              <span className="flex-1 truncate">{opt.label}</span>
+              {String(opt.value) === String(value) && <span className="text-emerald-400 text-xs flex-shrink-0">✓</span>}
             </button>
           ))}
         </div>
@@ -302,6 +325,8 @@ export default function Assets() {
   const fmt = (v) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
 
   const filteredAssets = assets.filter(a => {
+    const qty = parseFloat(a.quantity) || 0;
+    if (qty <= 0) return false; // ocultar posições zeradas
     const matchSearch = !search || (a.ticker||'').toLowerCase().includes(search.toLowerCase()) || (a.name||'').toLowerCase().includes(search.toLowerCase());
     const matchClass = !filterClass || a.asset_class_id === parseInt(filterClass);
     return matchSearch && matchClass;
