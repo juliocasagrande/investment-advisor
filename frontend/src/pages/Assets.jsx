@@ -132,15 +132,33 @@ function cleanClassName(name) {
     .trim();
 }
 
-function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', disabled = false }) {
+function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', disabled = false, onOpenChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        onOpenChange?.(false);
+      }
+    };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  }, [onOpenChange]);
+
+  const handleToggle = () => {
+    if (disabled) return;
+    const next = !open;
+    setOpen(next);
+    onOpenChange?.(next);
+  };
+
+  const handleSelect = (val) => {
+    onChange(val);
+    setOpen(false);
+    onOpenChange?.(false);
+  };
 
   const selected = options.find(o => String(o.value) === String(value));
 
@@ -149,7 +167,7 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
       <button
         type="button"
         disabled={disabled}
-        onClick={() => !disabled && setOpen(!open)}
+        onClick={handleToggle}
         className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border text-left transition-all ${
           disabled
             ? 'bg-slate-800/40 border-slate-700 text-slate-500 cursor-not-allowed'
@@ -167,12 +185,15 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl overflow-hidden max-h-56 overflow-y-auto" style={{ zIndex: 99999 }}>
+        <div
+          className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl overflow-y-auto"
+          style={{ zIndex: 99999, maxHeight: '240px' }}
+        >
           {options.map((opt) => (
             <button
               key={String(opt.value)}
               type="button"
-              onClick={() => { onChange(opt.value); setOpen(false); }}
+              onClick={() => handleSelect(opt.value)}
               className={`w-full flex items-center gap-3 px-4 py-3 text-left text-sm transition-colors ${
                 String(opt.value) === String(value)
                   ? 'bg-emerald-500/20 text-emerald-400'
@@ -217,6 +238,7 @@ export default function Assets() {
   const [selectedCategory, setSelectedCategory] = useState('');
   const [formData, setFormData] = useState({});
   const [collapsedGroups, setCollapsedGroups] = useState({});
+  const [classSelectOpen, setClassSelectOpen] = useState(false);
   const [transactionData, setTransactionData] = useState({
     type: 'BUY', quantity: '', price: '',
     date: new Date().toISOString().split('T')[0]
@@ -490,15 +512,15 @@ export default function Assets() {
       {/* Modal Novo/Editar */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 p-6 w-full max-w-lg rounded-2xl shadow-2xl" style={{ maxHeight: '85vh', overflowY: 'auto' }}>
+          <div className="bg-slate-900 border border-slate-700 p-6 w-full max-w-lg rounded-2xl shadow-2xl" style={{ maxHeight: '85vh', overflowY: classSelectOpen ? 'visible' : 'auto', overflowX: 'visible' }}>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold text-white">{editingAsset ? 'Editar Ativo' : 'Novo Ativo'}</h2>
-              <button onClick={() => { setShowModal(false); resetForm(); }} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"><X className="w-5 h-5" /></button>
+              <button onClick={() => { setShowModal(false); resetForm(); setClassSelectOpen(false); }} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"><X className="w-5 h-5" /></button>
             </div>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm text-slate-400 mb-2">Classe *</label>
-                <StyledSelect value={formData.assetClassId || ''} onChange={(v) => handleClassSelect(v)} options={classModalOptions} placeholder="Selecione a classe..." disabled={!!editingAsset} />
+                <StyledSelect value={formData.assetClassId || ''} onChange={(v) => handleClassSelect(v)} options={classModalOptions} placeholder="Selecione a classe..." disabled={!!editingAsset} onOpenChange={setClassSelectOpen} />
               </div>
               {selectedCategory && (
                 <>
