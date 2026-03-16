@@ -1,5 +1,47 @@
 const pool = require('../config/database');
-const axios = require('axios');
+const axios = require('axios'); // mantido apenas para Groq (POST)
+
+// ── Helper HTTP genérico ───────────────────────────────────────────────────────
+// Usa fetch nativo (Node 18+) para preservar a URL exatamente como montada,
+// evitando o bug do axios 1.x que re-codifica vírgulas (%2C).
+async function httpGet(url, timeoutMs = 15000, extraHeaders = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+        ...extraHeaders
+      }
+    });
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── Yahoo Finance — buscar fundamentals de ação BR ────────────────────────────
+// Ações BR no Yahoo usam sufixo .SA (ex: MDNE3 → MDNE3.SA)
+// Endpoint v10/quoteSummary retorna defaultKeyStatistics + financialData gratuitamente
+async function yahooGetBR(ticker) {
+  const symbol = ticker.endsWith('.SA') ? ticker : `${ticker}.SA`;
+  const modules = 'defaultKeyStatistics,financialData,summaryDetail,price';
+  const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=${modules}`;
+
+  console.log(`[Yahoo] Buscando ${symbol}`);
+  const data = await httpGet(url, 12000);
+
+  const result = data?.quoteSummary?.result?.[0];
+  if (!result) throw new Error(`Sem dados para ${ticker} no Yahoo Finance`);
+  return result;
+}
 
 // ── Auto-healing ──────────────────────────────────────────────────────────────
 async function ensureColumns() {
@@ -79,7 +121,6 @@ class ScreenerController {
       let stocks = [];
 
       if (assetClass === 'stocks_us' || assetClass === 'reits') {
-        // ── Ações EUA / REITs via AlphaVantage ───────────────────────────
         const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
         if (!alphaKey) {
           return res.status(400).json({
@@ -88,17 +129,10 @@ class ScreenerController {
         }
         const list = assetClass === 'reits' ? REITS : STOCKS_US;
         stocks = await this.fetchUSStocks(list, alphaKey, filters);
-
       } else {
-        // ── Ações BR / FIIs via Brapi ─────────────────────────────────────
-        const token = settings.brapi_token;
-        if (!token) {
-          return res.status(400).json({
-            error: 'Configure seu token Brapi nas configurações para usar o Screener.'
-          });
-        }
+        // Ações BR / FIIs via Yahoo Finance (gratuito, sem token)
         const list = assetClass === 'fiis' ? FIIS : STOCKS_BR;
-        stocks = await this.fetchBRStocks(list, token, filters);
+        stocks = await this.fetchBRStocks(list, filters);
       }
 
       stocks.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -120,41 +154,35 @@ class ScreenerController {
     }
   }
 
-  // ── Buscar ações BR/FII em lote via Brapi ─────────────────────────────────
-  async fetchBRStocks(list, token, filters) {
+  // ── Buscar ações BR/FII via Yahoo Finance ─────────────────────────────────
+  async fetchBRStocks(list, filters) {
     const unique = [...new Set(list)];
     const results = [];
-    const batchSize = 5; // menor batch para não perder dados nos módulos
 
-    for (let i = 0; i < unique.length; i += batchSize) {
-      const batch = unique.slice(i, i + batchSize).join(',');
+    for (const ticker of unique) {
       try {
-        const batchUrl = `https://brapi.dev/api/quote/${batch}?token=${token}&modules=defaultKeyStatistics,financialData&fundamental=true`;
-        const response = await axios.get(batchUrl, { timeout: 25000 });
-        if (response.data?.results) {
-          for (const stock of response.data.results) {
-            const rawFundamentals = this.extractBRFundamentals(stock);
-            const { _hasAnyData, _hasModuleData, ...fundamentals } = rawFundamentals;
-            const passFilters = this.applyFilters(fundamentals, filters);
-            const score = this.calculateScore(fundamentals, filters);
-            const effectiveScore = score ?? 50;
-            results.push({
-              ticker: stock.symbol,
-              name: stock.longName || stock.shortName || stock.symbol,
-              price: stock.regularMarketPrice,
-              change: stock.regularMarketChangePercent,
-              market: 'BR',
-              ...fundamentals,
-              score: effectiveScore,
-              passFilters,
-              recommendation: effectiveScore >= 70 ? 'COMPRAR' : effectiveScore >= 50 ? 'MANTER' : 'AVALIAR'
-            });
-          }
-        }
+        const yData = await yahooGetBR(ticker);
+        const priceModule = yData.price || {};
+        const fundamentals = this.extractYahooFundamentals(yData);
+        const passFilters = this.applyFilters(fundamentals, filters);
+        const score = this.calculateScore(fundamentals, filters);
+        const effectiveScore = score ?? 50;
+
+        results.push({
+          ticker,
+          name: priceModule.longName || priceModule.shortName || ticker,
+          price: priceModule.regularMarketPrice?.raw ?? null,
+          change: priceModule.regularMarketChangePercent?.raw ?? null,
+          market: 'BR',
+          ...fundamentals,
+          score: effectiveScore,
+          passFilters,
+          recommendation: effectiveScore >= 70 ? 'COMPRAR' : effectiveScore >= 50 ? 'MANTER' : 'AVALIAR'
+        });
       } catch (e) {
-        console.error(`Erro batch BR ${batch}:`, e.message);
+        console.error(`Erro Yahoo BR ${ticker}:`, e.message);
       }
-      if (i + batchSize < unique.length) await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 300));
     }
     return results;
   }
@@ -162,7 +190,6 @@ class ScreenerController {
   // ── Buscar ações US via AlphaVantage ──────────────────────────────────────
   async fetchUSStocks(list, alphaKey, filters) {
     const results = [];
-    // AlphaVantage free tier: 5 req/min — processar com delay
     for (const ticker of list) {
       try {
         const [quoteRes, overviewRes] = await Promise.allSettled([
@@ -184,6 +211,7 @@ class ScreenerController {
         const fundamentals = this.extractUSFundamentals(quote, overview);
         const passFilters = this.applyFilters(fundamentals, filters);
         const score = this.calculateScore(fundamentals, filters);
+        const effectiveScore = score ?? 50;
 
         results.push({
           ticker,
@@ -193,14 +221,13 @@ class ScreenerController {
           market: 'US',
           sector: overview?.Sector,
           ...fundamentals,
-          score,
+          score: effectiveScore,
           passFilters,
-          recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
+          recommendation: effectiveScore >= 70 ? 'COMPRAR' : effectiveScore >= 50 ? 'MANTER' : 'AVALIAR'
         });
       } catch (e) {
         console.error(`Erro US ${ticker}:`, e.message);
       }
-      // AlphaVantage free: máx 5 req/min → 2 chamadas por ticker = delay
       await new Promise(r => setTimeout(r, 13000));
     }
     return results;
@@ -238,11 +265,9 @@ class ScreenerController {
       }
 
       const settings = await getUserSettings(userId);
-      const brapiToken = settings.brapi_token;
-      const alphaKey   = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
-      const groqKey    = settings.groq_api_key || process.env.GROQ_API_KEY;
+      const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
+      const groqKey  = settings.groq_api_key || process.env.GROQ_API_KEY;
 
-      // Classificar ativos por tipo de análise
       const isBRAnalyzable = (a) =>
         ANALYZABLE_CATEGORIES.has(a.class_category) ||
         /^[A-Z]{3,6}\d{1,2}$/.test(a.ticker);
@@ -251,93 +276,82 @@ class ScreenerController {
         US_CATEGORIES.has(a.class_category) ||
         /^[A-Z]{1,5}(-[A-Z])?$/.test(a.ticker);
 
-      const brAssets  = assetsResult.rows.filter(isBRAnalyzable);
-      const usAssets  = assetsResult.rows.filter(a => !isBRAnalyzable(a) && isUSAnalyzable(a));
-      const other     = assetsResult.rows.filter(a => !isBRAnalyzable(a) && !isUSAnalyzable(a));
+      const brAssets = assetsResult.rows.filter(isBRAnalyzable);
+      const usAssets = assetsResult.rows.filter(a => !isBRAnalyzable(a) && isUSAnalyzable(a));
+      const other    = assetsResult.rows.filter(a => !isBRAnalyzable(a) && !isUSAnalyzable(a));
 
       const analysis = [];
       let manter = 0, avaliarTroca = 0, totalScore = 0, scoredCount = 0;
 
-      // ── Análise BR ────────────────────────────────────────────────────────
-      if (brAssets.length > 0) {
-        if (!brapiToken) {
-          brAssets.forEach(a => this.pushBasicPosition(analysis, a,
-            'Configure token Brapi nas Configurações para análise fundamentalista'));
-        } else {
-          for (const asset of brAssets) {
-            try {
-              const brapiUrl = `https://brapi.dev/api/quote/${asset.ticker}?token=${brapiToken}&modules=defaultKeyStatistics,financialData&fundamental=true`;
-              console.log(`[Screener] Buscando ${asset.ticker}:`, brapiUrl.replace(brapiToken, 'TOKEN'));
-              const resp = await axios.get(brapiUrl, { timeout: 15000 });
-              console.log(`[Screener] Resposta ${asset.ticker}:`, JSON.stringify(resp.data).substring(0, 300));
-              const stockData = resp.data?.results?.[0];
-              if (!stockData) {
-                console.warn(`[Screener] Sem dados para ${asset.ticker}`);
-                this.pushBasicPosition(analysis, asset, 'Dados não disponíveis na Brapi');
-                continue;
-              }
+      // ── Análise BR via Yahoo Finance ──────────────────────────────────────
+      for (const asset of brAssets) {
+        try {
+          console.log(`[Screener] Buscando ${asset.ticker} via Yahoo Finance`);
+          const yData = await yahooGetBR(asset.ticker);
 
-              const fundamentals = this.extractBRFundamentals(stockData);
-              const { _hasAnyData, _hasModuleData, ...cleanFundamentals } = fundamentals;
+          const priceModule = yData.price || {};
+          const currentPrice = priceModule.regularMarketPrice?.raw
+            ?? parseFloat(asset.current_price)
+            ?? parseFloat(asset.average_price);
+          const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;
 
-              // Se não chegou nenhum dado fundamentalista (plano sem módulos ou ativo sem dados)
-              if (!_hasAnyData) {
-                const reason = _hasModuleData
-                  ? 'Indicadores não disponíveis para este ativo'
-                  : 'Módulos fundamentalistas não disponíveis no plano Brapi atual';
-                this.pushBasicPosition(analysis, asset, reason);
-                // Ainda conta na posição mas sem score
-                const { currentValue, gainPercent } = this.calcPosition(asset, stockData.regularMarketPrice);
-                analysis[analysis.length - 1].currentPrice = stockData.regularMarketPrice || parseFloat(asset.current_price) || parseFloat(asset.average_price);
-                analysis[analysis.length - 1].currentValue = currentValue;
-                analysis[analysis.length - 1].gainPercent = gainPercent;
-                analysis[analysis.length - 1].name = stockData.longName || stockData.shortName || asset.name || asset.ticker;
-                continue;
-              }
+          const fundamentals = this.extractYahooFundamentals(yData);
+          const hasAnyData = Object.values(fundamentals).some(v => v != null);
 
-              const score       = this.calculateScore(cleanFundamentals, filters);
-              const passFilters = this.applyFilters(cleanFundamentals, filters);
-              const violations  = this.getFilterViolations(cleanFundamentals, filters);
-              // score null = dados parciais; usar pl como tie-breaker
-              const effectiveScore = score ?? 50;
-              const action      = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
-
-              if (action === 'MANTER') manter++; else avaliarTroca++;
-              if (score != null) { totalScore += score; scoredCount++; }
-
-              const { currentValue, gainPercent } = this.calcPosition(asset, stockData.regularMarketPrice);
-
-              analysis.push({
-                ticker: asset.ticker,
-                name: stockData.longName || stockData.shortName || asset.name || asset.ticker,
-                quantity: asset.quantity,
-                averagePrice: asset.average_price,
-                currentPrice: stockData.regularMarketPrice || parseFloat(asset.current_price),
-                currentValue, gainPercent,
-                qualityScore: score, passFilters, violations,
-                recommendation: {
-                  action,
-                  reason: this.getRecommendationReason(cleanFundamentals, effectiveScore, passFilters, violations)
-                },
-                fundamentals: cleanFundamentals,
-                assetClass: asset.class_name,
-                market: 'BR'
-              });
-            } catch (e) {
-              console.error(`[Screener] ERRO ao buscar ${asset.ticker}:`, e.message);
-              console.error(`[Screener] Status:`, e.response?.status, 'Data:', JSON.stringify(e.response?.data));
-              const errMsg = e.response?.status === 401 ? 'Token Brapi inválido'
-                           : e.response?.status === 402 ? 'Limite do plano Brapi atingido'
-                           : e.response?.status === 404 ? 'Ativo não encontrado na Brapi'
-                           : `Erro ao buscar dados na Brapi (${e.response?.status || e.code || e.message})`;
-              this.pushBasicPosition(analysis, asset, errMsg);
-            }
-            await new Promise(r => setTimeout(r, 300));
+          if (!hasAnyData) {
+            this.pushBasicPosition(analysis, asset, 'Indicadores não disponíveis no Yahoo Finance para este ativo');
+            analysis[analysis.length - 1].currentPrice = currentPrice;
+            analysis[analysis.length - 1].name = name;
+            const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
+            analysis[analysis.length - 1].currentValue = currentValue;
+            analysis[analysis.length - 1].gainPercent = gainPercent;
+            continue;
           }
+
+          const score        = this.calculateScore(fundamentals, filters);
+          const passFilters  = this.applyFilters(fundamentals, filters);
+          const violations   = this.getFilterViolations(fundamentals, filters);
+          const effectiveScore = score ?? 50;
+          const action       = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
+
+          if (action === 'MANTER') manter++; else avaliarTroca++;
+          if (score != null) { totalScore += score; scoredCount++; }
+
+          const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
+
+          analysis.push({
+            ticker: asset.ticker,
+            name,
+            quantity: asset.quantity,
+            averagePrice: asset.average_price,
+            currentPrice,
+            currentValue, gainPercent,
+            qualityScore: score,
+            passFilters, violations,
+            recommendation: {
+              action,
+              reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations)
+            },
+            fundamentals,
+            assetClass: asset.class_name,
+            market: 'BR'
+          });
+
+          console.log(`[Screener] ${asset.ticker} — score: ${score}, action: ${action}`);
+        } catch (e) {
+          console.error(`[Screener] ERRO ao buscar ${asset.ticker}:`, e.message);
+          const status = e.status;
+          const errMsg = status === 404
+            ? 'Ativo não encontrado no Yahoo Finance'
+            : status === 429
+            ? 'Rate limit do Yahoo Finance — tente novamente em instantes'
+            : `Erro ao buscar dados (${e.message})`;
+          this.pushBasicPosition(analysis, asset, errMsg);
         }
+        await new Promise(r => setTimeout(r, 400));
       }
 
-      // ── Análise EUA ───────────────────────────────────────────────────────
+      // ── Análise EUA via AlphaVantage ──────────────────────────────────────
       if (usAssets.length > 0) {
         if (!alphaKey) {
           usAssets.forEach(a => this.pushBasicPosition(analysis, a,
@@ -364,7 +378,7 @@ class ScreenerController {
                 continue;
               }
 
-              const currentPx   = parseFloat(quote?.['05. price'] || asset.current_price || asset.average_price);
+              const currentPx    = parseFloat(quote?.['05. price'] || asset.current_price || asset.average_price);
               const fundamentals = this.extractUSFundamentals(quote, overview);
               const score        = this.calculateScore(fundamentals, filters);
               const passFilters  = this.applyFilters(fundamentals, filters);
@@ -387,7 +401,7 @@ class ScreenerController {
                 qualityScore: score, passFilters, violations,
                 recommendation: {
                   action,
-                  reason: this.getRecommendationReason(fundamentals, score, passFilters, violations)
+                  reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations)
                 },
                 fundamentals,
                 assetClass: asset.class_name,
@@ -421,7 +435,6 @@ class ScreenerController {
         });
       }
 
-      // Ordenar: com fundamentos primeiro, depois por valor
       analysis.sort((a, b) => {
         if (!!a.noFundamentals !== !!b.noFundamentals) return a.noFundamentals ? 1 : -1;
         return (b.currentValue || 0) - (a.currentValue || 0);
@@ -455,36 +468,26 @@ class ScreenerController {
   async getSuggestions(req, res) {
     try {
       const { ticker, filters = {} } = req.body;
-      const userId = req.userId;
-      const settings = await getUserSettings(userId);
-      const token = settings.brapi_token;
-      if (!token) return res.status(400).json({ error: 'Configure seu token Brapi' });
-
       const candidates = STOCKS_BR.filter(s => s !== ticker).slice(0, 20);
       const suggestions = [];
 
       for (const stock of candidates) {
         try {
-          const response = await axios.get(
-            `https://brapi.dev/api/quote/${stock}?token=${token}&modules=defaultKeyStatistics,financialData&fundamental=true`,
-            { timeout: 15000 }
-          );
-          if (response.data?.results?.[0]) {
-            const data = response.data.results[0];
-            const fundamentals = this.extractBRFundamentals(data);
-            const score = this.calculateScore(fundamentals, filters);
-            if (this.applyFilters(fundamentals, filters)) {
-              suggestions.push({
-                ticker: stock,
-                name: data.longName || stock,
-                price: data.regularMarketPrice,
-                ...fundamentals,
-                score
-              });
-            }
+          const yData = await yahooGetBR(stock);
+          const priceModule = yData.price || {};
+          const fundamentals = this.extractYahooFundamentals(yData);
+          const score = this.calculateScore(fundamentals, filters) ?? 50;
+          if (this.applyFilters(fundamentals, filters)) {
+            suggestions.push({
+              ticker: stock,
+              name: priceModule.longName || priceModule.shortName || stock,
+              price: priceModule.regularMarketPrice?.raw ?? null,
+              ...fundamentals,
+              score
+            });
           }
         } catch (e) { }
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 300));
       }
 
       suggestions.sort((a, b) => b.score - a.score);
@@ -498,26 +501,20 @@ class ScreenerController {
   async getFundamentals(req, res) {
     try {
       const { ticker } = req.params;
-      const settings = await getUserSettings(req.userId);
-      const token = settings.brapi_token;
-      if (!token) return res.status(400).json({ error: 'Configure seu token Brapi' });
+      const yData = await yahooGetBR(ticker);
+      const priceModule = yData.price || {};
+      const fundamentals = this.extractYahooFundamentals(yData);
 
-      const response = await axios.get(
-        `https://brapi.dev/api/quote/${ticker}?token=${token}&modules=defaultKeyStatistics,financialData&fundamental=true`,
-        { timeout: 15000 }
-      );
-      if (!response.data?.results?.[0]) return res.status(404).json({ error: 'Ação não encontrada' });
-
-      const stock = response.data.results[0];
-      const fundamentals = this.extractBRFundamentals(stock);
       return res.json({
-        ticker: stock.symbol, name: stock.longName,
-        price: stock.regularMarketPrice,
+        ticker,
+        name: priceModule.longName || priceModule.shortName || ticker,
+        price: priceModule.regularMarketPrice?.raw ?? null,
         ...fundamentals,
-        score: this.calculateScore(fundamentals, {})
+        score: this.calculateScore(fundamentals, {}) ?? 50
       });
     } catch (error) {
-      return res.status(500).json({ error: 'Erro ao buscar dados' });
+      console.error('Erro getFundamentals:', error);
+      return res.status(500).json({ error: 'Erro ao buscar dados: ' + error.message });
     }
   }
 
@@ -544,67 +541,82 @@ class ScreenerController {
     }
   }
 
-  // ── Extração de fundamentals ──────────────────────────────────────────────
+  // ── Extração de fundamentals — Yahoo Finance ──────────────────────────────
+  // Estrutura do quoteSummary v10:
+  //   price:               regularMarketPrice, longName, shortName, regularMarketChangePercent
+  //   defaultKeyStatistics: forwardPE, priceToBook, enterpriseToEbitda, dividendYield
+  //   financialData:        currentRatio, debtToEquity, returnOnAssets, returnOnEquity,
+  //                         revenueGrowth, operatingMargins, profitMargins
+  //   summaryDetail:        trailingPE, forwardPE, dividendYield, priceToSalesTrailing12Months
+  //
+  // Campos retornam como { raw: number, fmt: "string" } — sempre usar .raw
+  // debtToEquity vem em escala percentual (ex: 101.6 = 1.016x) — dividir por 100
+  extractYahooFundamentals(yData) {
+    const ks = yData.defaultKeyStatistics || {};
+    const fd = yData.financialData        || {};
+    const sd = yData.summaryDetail        || {};
 
-  // Brapi: campos corretos com conversões certas
-  extractBRFundamentals(stock) {
-    // Estrutura da resposta Brapi confirmada pela documentação oficial:
-    //
-    // Raiz: priceEarnings, earningsPerShare, marketCap, regularMarketPrice
-    // financialData (plano gratuito+): currentRatio, debtToEquity, returnOnAssets,
-    //   returnOnEquity, revenueGrowth, grossMargins, ebitdaMargins, operatingMargins,
-    //   profitMargins, ebitda, totalRevenue, totalDebt
-    // defaultKeyStatistics (plano pago): priceToBook, dividendYield, forwardPE,
-    //   enterpriseToEbitda, marketCap
-    //
-    // IMPORTANTE: debtToEquity vem em escala percentual (ex: 101.6 = 1.016x)
-    // IMPORTANTE: margens, ROE, ROA vêm como decimal (ex: 0.279 = 27.9%)
+    // Extrai o valor numérico de campos Yahoo ({ raw, fmt } ou number direto)
+    const raw = (obj, key) => {
+      const v = obj[key];
+      if (v == null) return null;
+      const n = typeof v === 'object' ? v.raw : v;
+      return (n != null && !isNaN(parseFloat(n))) ? parseFloat(n) : null;
+    };
+    const pct = (obj, key) => {
+      const v = raw(obj, key);
+      return v != null ? v * 100 : null;
+    };
 
-    const ks = stock.defaultKeyStatistics || {};
-    const fd = stock.financialData || {};
+    // P/L — trailingPE do summaryDetail é o mais confiável
+    const pl = raw(sd, 'trailingPE') ?? raw(ks, 'forwardPE') ?? raw(sd, 'forwardPE');
 
-    const pct = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) * 100 : null;
-    const num = (v) => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) : null;
+    // P/VP — defaultKeyStatistics
+    const pvp = raw(ks, 'priceToBook');
 
-    // P/L: raiz sempre tem priceEarnings com fundamental=true; ks.forwardPE se plano pago
-    const pl = num(ks.forwardPE) ?? num(stock.priceEarnings);
+    // DY — summaryDetail.dividendYield (em decimal: 0.05 = 5%)
+    // Às vezes já vem em % (ex: 5.2), às vezes em decimal (0.052)
+    const dy = (() => {
+      const v = raw(sd, 'dividendYield') ?? raw(ks, 'dividendYield');
+      if (v == null) return null;
+      return v > 1 ? v : v * 100;
+    })();
 
-    // P/VP: vem em defaultKeyStatistics — plano pago apenas
-    const pvp = num(ks.priceToBook);
+    // EV/EBITDA
+    const evEbitda = raw(ks, 'enterpriseToEbitda');
 
-    // DY: defaultKeyStatistics.dividendYield em decimal — plano pago
-    const dy = ks.dividendYield != null ? pct(ks.dividendYield) : null;
+    // PSR
+    const psr = raw(sd, 'priceToSalesTrailing12Months');
 
-    // EV/EBITDA: defaultKeyStatistics — plano pago
-    const evEbitda = num(ks.enterpriseToEbitda);
+    // Margens (em decimal no Yahoo → multiplicar por 100)
+    const margemEbit    = pct(fd, 'operatingMargins');
+    const margemLiquida = pct(fd, 'profitMargins');
 
-    // Campos de financialData — disponíveis no plano gratuito também:
-    const margemEbit       = fd.operatingMargins != null ? pct(fd.operatingMargins) : null;
-    const margemLiquida    = fd.profitMargins    != null ? pct(fd.profitMargins)    : null;
-    const liquidezCorrente = num(fd.currentRatio);
-    const roic             = fd.returnOnAssets   != null ? pct(fd.returnOnAssets)   : null;
-    const roe              = fd.returnOnEquity   != null ? pct(fd.returnOnEquity)   : null;
-    // debtToEquity: 101.6 significa 1.016x — dividir por 100
-    const dividaPl         = fd.debtToEquity     != null ? parseFloat(fd.debtToEquity) / 100 : null;
-    const crescReceita     = fd.revenueGrowth    != null ? pct(fd.revenueGrowth)    : null;
-    const psr              = null; // PSR não existe diretamente na Brapi
+    // Liquidez corrente
+    const liquidezCorrente = raw(fd, 'currentRatio');
 
-    // Detectar se ao menos algum dado fundamentalista chegou
-    const hasAnyData = [pl, pvp, dy, margemEbit, margemLiquida, liquidezCorrente, roe, roic, dividaPl]
-      .some(v => v != null);
+    // ROE e ROIC proxy (ROA)
+    const roe  = pct(fd, 'returnOnEquity');
+    const roic = pct(fd, 'returnOnAssets');
 
-    // Detectar se veio apenas da raiz (plano gratuito sem módulos completos)
-    const hasModuleData = Object.keys(fd).length > 0 || Object.keys(ks).length > 0;
+    // Dívida/PL — Yahoo retorna em percentual (101.6 = 1.016x) → dividir por 100
+    const dividaPl = (() => {
+      const v = raw(fd, 'debtToEquity');
+      return v != null ? v / 100 : null;
+    })();
+
+    // Crescimento de receita
+    const crescReceita = pct(fd, 'revenueGrowth');
 
     return {
-      pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida,
-      liquidezCorrente, roic, roe, dividaPl, crescReceita,
-      _hasAnyData: hasAnyData,
-      _hasModuleData: hasModuleData
+      pl, pvp, psr, dy, evEbitda,
+      margemEbit, margemLiquida,
+      liquidezCorrente, roic, roe,
+      dividaPl, crescReceita
     };
   }
 
-  // AlphaVantage: campos do OVERVIEW endpoint
+  // ── Extração de fundamentals — AlphaVantage (ações US) ───────────────────
   extractUSFundamentals(quote, overview) {
     const safe = (v) => {
       const n = parseFloat(v);
@@ -614,7 +626,6 @@ class ScreenerController {
       pl:               safe(overview?.PERatio),
       pvp:              safe(overview?.PriceToBookRatio),
       psr:              safe(overview?.PriceToSalesRatioTTM),
-      // AlphaVantage DividendYield já vem como decimal (ex: 0.015 = 1.5%)
       dy:               overview?.DividendYield ? safe(overview.DividendYield) * 100 : null,
       evEbitda:         safe(overview?.EVToEBITDA),
       margemEbit:       safe(overview?.OperatingMarginTTM) != null
@@ -686,7 +697,6 @@ class ScreenerController {
   }
 
   calculateScore(data, filters = {}) {
-    // Se não há nenhum dado, retornar null (sem dados para pontuar)
     const hasAny = [data.pl, data.pvp, data.dy, data.roe, data.roic,
                     data.margemLiquida, data.dividaPl, data.crescReceita,
                     data.liquidezCorrente].some(v => v != null);
@@ -698,52 +708,44 @@ class ScreenerController {
       (min == null || val >= parseFloat(min)) &&
       (max == null || val <= parseFloat(max));
 
-    // P/L
     if (data.pl != null && data.pl > 0) {
       if (inRange(data.pl, filters.plMin, filters.plMax)) score += 10;
-      else if (data.pl > 0 && data.pl <= 10) score += 3;
+      else if (data.pl <= 10) score += 3;
       else score -= 10;
     }
-    // P/VP
     if (data.pvp != null) {
       if (inRange(data.pvp, filters.pvpMin, filters.pvpMax)) score += 8;
       else if (data.pvp < 1) score += 3;
       else if (data.pvp > 3) score -= 10;
     }
-    // DY
     if (data.dy != null) {
       if (inRange(data.dy, filters.dyMin, filters.dyMax)) score += 10;
       else if (data.dy > 6) score += 6;
       else if (data.dy > 4) score += 3;
       else if (filters.dyMin && data.dy < filters.dyMin) score -= 5;
     }
-    // ROE
     if (data.roe != null) {
       if (inRange(data.roe, filters.roeMin, filters.roeMax)) score += 10;
       else if (data.roe > 20) score += 6;
       else if (data.roe > 15) score += 3;
       else if (filters.roeMin && data.roe < filters.roeMin) score -= 8;
     }
-    // ROIC
     if (data.roic != null) {
       if (inRange(data.roic, filters.roicMin, filters.roicMax)) score += 7;
       else if (data.roic > 15) score += 4;
       else if (filters.roicMin && data.roic < filters.roicMin) score -= 5;
     }
-    // Margem Líquida
     if (data.margemLiquida != null) {
       if (inRange(data.margemLiquida, filters.margemLiquidaMin, filters.margemLiquidaMax)) score += 5;
       else if (data.margemLiquida > 15) score += 3;
       else if (filters.margemLiquidaMin && data.margemLiquida < filters.margemLiquidaMin) score -= 5;
     }
-    // Dívida/PL
     if (data.dividaPl != null) {
       if (inRange(data.dividaPl, filters.dividaPatrimonioMin, filters.dividaPatrimonioMax)) score += 5;
       else if (data.dividaPl < 0.5) score += 3;
       else if (filters.dividaPatrimonioMax && data.dividaPl > filters.dividaPatrimonioMax) score -= 12;
       else if (data.dividaPl > 2) score -= 8;
     }
-    // Crescimento
     if (data.crescReceita != null) {
       if (inRange(data.crescReceita, filters.crescimentoReceitaMin, filters.crescimentoReceitaMax)) score += 5;
       else if (data.crescReceita > 10) score += 3;
