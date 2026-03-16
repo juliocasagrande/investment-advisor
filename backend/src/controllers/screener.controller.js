@@ -66,30 +66,110 @@ async function ensureColumns() {
 ensureColumns().catch(e => console.error('screener ensureColumns:', e.message));
 
 // ── Listas de ativos ──────────────────────────────────────────────────────────
+
 const STOCKS_BR = [
-  'PETR4','VALE3','ITUB4','BBDC4','ABEV3','B3SA3','WEGE3','RENT3','EQTL3',
-  'SUZB3','RADL3','RAIL3','JBSS3','BBAS3','SANB11','ITSA4','BPAC11','BBSE3',
-  'PRIO3','FLRY3','HYPE3','KLBN11','EMBR3','VIVT3','CMIG4','ELET3','SBSP3',
-  'TAEE11','CPFE3','EGIE3','RDOR3','QUAL3','HAPV3','TOTS3','LREN3','CSAN3',
-  'ARZZ3','BRFS3','MRFG3','MRVE3','EVEN3','EZTC3','CCRO3','NTCO3','MULT3',
-  'GRND3','PSSA3','GGBR4','CMIN3','CSNA3','USIM5',
+  // Bancos e Financeiras
+  'ITUB4','BBDC4','BBAS3','SANB11','ITSA4','BPAC11','BBSE3','B3SA3','PSSA3','CIEL3',
+  'IRBR3','CARD3','WIZC3','PORT3','CASH3',
+
+  // Petróleo, Gás e Energia
+  'PETR4','PETR3','PRIO3','RRRP3','RECV3',
+  'CSAN3','RAIZ4','UGPA3','VBBR3',
+  'ELET3','ELET6','CMIG4','CPFE3','EGIE3','TAEE11','ENBR3','AESB3','EQTL3','TRPL4',
+  'ALUP11','ENGI11','CPLE6','NEOE3','MEGA3',
+
+  // Mineração e Siderurgia
+  'VALE3','GGBR4','CSNA3','USIM5','GOAU4','CMIN3','BRAP4',
+
+  // Papel e Celulose
+  'SUZB3','KLBN11','RANI3',
+
+  // Indústria e Bens de Capital
+  'WEGE3','EMBR3','TUPY3','ROMI3','POMO4','KEPL3',
+
+  // Logística e Transporte
+  'RAIL3','CCRO3','ECOR3','LOGG3','JSLG3','MOVI3','SIMH3','HBSA3',
+
+  // Varejo
+  'LREN3','ARZZ3','SOMA3','VIVA3','CEAB3','GUAR3',
+  'MGLU3','VIIA3','AMER3','BHIA3',
+  'PETZ3','GMAT3','CAMB3',
+
+  // Consumo e Alimentos
+  'ABEV3','BRFS3','MRFG3','JBSS3','MDIA3','SMTO3','SLCE3',
+  'BEEF3','CRFB3','ASAI3','PCAR3','CAML3',
+
+  // Saúde
+  'RDOR3','HAPV3','QUAL3','FLRY3','DASA3','ODPV3','HYPE3','VVEO3','MATD3',
+
+  // Tecnologia
+  'TOTS3','POSI3','LWSA3','SQIA3',
+
+  // Telecom
+  'VIVT3','TIMS3','OIBR3',
+
+  // Construção e Imobiliário
+  'MRVE3','EZTC3','EVEN3','CYRE3','DIRR3','TEND3','TRIS3',
+  'JHSF3','HBOR3','LAVV3','CURY3','PLPL3',
+
+  // Shoppings
+  'MULT3','IGTI11','ALSO3','BRML3','JHSF3',
+
+  // Saneamento
+  'SBSP3','SAPR11','CSMG3',
+
+  // Diversificados
+  'GRND3','NTCO3','ALPA4','MYPK3','FRAS3','RAPT4'
 ];
 
 const FIIS = [
   'MXRF11','CPTS11','KNCR11','KNIP11','HGLG11','BTLG11','XPLG11','VILG11',
   'XPML11','VISC11','HSML11','HGBS11','KNRI11','HGRE11','BRCR11','RBHG11',
   'RBRF11','KFOF11','MGFF11','HFOF11','IRDM11','VGIP11','RECR11','RBRP11',
+
+  // Logísticos
+  'LVBI11','GGRC11','BTCR11','PATL11','TRXF11','BLMG11','HSLG11',
+
+  // Papel
+  'MCCI11','KNHY11','DEVA11','PLCR11','CVBI11','KNSC11','VGIR11',
+
+  // Shoppings
+  'MALL11','HSML11','VISC11','XPML11',
+
+  // Escritórios
+  'PVBI11','JSRE11','BCRI11','HGPO11','RNGO11',
+
+  // FoFs
+  'BCFF11','RBRF11','XPSF11','HFOF11'
 ];
 
 const STOCKS_US = [
   'AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','BRK-B','JPM','JNJ',
   'V','PG','UNH','HD','MA','DIS','BAC','XOM','PFE','KO',
   'WMT','CSCO','VZ','INTC','NFLX','ADBE','CRM','AMD','PYPL','QCOM',
+  'T','PEP','COST','ABBV','AVGO','ORCL','TXN','LIN','ACN','NKE',
+  'MCD','DHR','ABT','WFC','LOW','NEE','PM','RTX','HON','IBM',
+  'AMAT','SBUX','INTU','ISRG','CAT','GE','NOW','BKNG','MDT'
 ];
 
 const REITS = [
-  'O','SPG','PLD','AMT','CCI','EQIX','PSA','DLR','VICI','WP',
-  'NNN','EXR','AVB','EQR','MAA','UDR','CPT','AIR','KIM','REG',
+  'O','SPG','PLD','AMT','CCI','EQIX','PSA','DLR','VICI','WPC',
+  'NNN','EXR','AVB','EQR','MAA','UDR','CPT','KIM','REG',
+
+  // Data centers
+  'DLR','EQIX',
+
+  // Healthcare
+  'WELL','VTR','DOC','HR',
+
+  // Industrial
+  'PLD','FR','EGP',
+
+  // Retail
+  'FRT','BXP','KRG',
+
+  // Diversified
+  'STOR','SRC','ADC'
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
