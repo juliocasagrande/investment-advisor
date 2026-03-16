@@ -185,7 +185,7 @@ O campo recommendedClass deve indicar claramente qual ÚNICA classe de ativo est
         "Cripto": 5,
         "Metais": 10
       },
-      summary: "Dados padrão baseados no cenário típico brasileiro. Configure sua API key do Groq para análises personalizadas e atualizadas com IA.",
+      summary: "Cenário macroeconômico típico brasileiro com juros elevados, dólar volátil e oportunidades em renda fixa e FIIs.",
       updatedAt: new Date().toISOString()
     };
   }
