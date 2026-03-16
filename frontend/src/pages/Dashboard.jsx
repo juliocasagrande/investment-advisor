@@ -309,11 +309,16 @@ export default function Dashboard() {
                   <Zap className="w-5 h-5 text-purple-400" />
                 </div>
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <span className="text-xs font-medium text-purple-400 uppercase tracking-wider">Classe Mais Favorecida Agora</span>
                     <span className={'text-xs px-2 py-0.5 rounded-full font-medium ' + (macroAnalysis.recommendedClass.confidence === 'alta' ? 'bg-emerald-500/20 text-emerald-400' : macroAnalysis.recommendedClass.confidence === 'media' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-500/20 text-slate-400')}>
                       confiança {macroAnalysis.recommendedClass.confidence}
                     </span>
+                    {/* Badge de origem da análise */}
+                    {macroAnalysis.isDefault
+                      ? <span className="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-400">dados padrão</span>
+                      : <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 flex items-center gap-1"><Zap className="w-3 h-3" />IA Groq</span>
+                    }
                   </div>
                   <p className="text-white font-semibold text-lg">{macroAnalysis.recommendedClass.name}</p>
                   <p className="text-slate-300 text-sm mt-1">{macroAnalysis.recommendedClass.reason}</p>
@@ -325,12 +330,33 @@ export default function Dashboard() {
             {macroAnalysis.summary && (
               <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/20 rounded-xl p-4">
                 <p className="text-slate-300 text-sm leading-relaxed">{macroAnalysis.summary}</p>
-                {macroAnalysis.isDefault && (
-                  <p className="text-xs text-amber-400 mt-2 flex items-center gap-1">
-                    <Lightbulb className="w-3 h-3" />
-                    Configure sua API key do Groq nas configurações para análises personalizadas com IA
-                  </p>
-                )}
+
+                {/* Data de atualização + status */}
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-700/50 flex-wrap gap-2">
+                  {macroAnalysis.updatedAt && (
+                    <p className="text-xs text-slate-500 flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      Atualizado em {(() => {
+                        try {
+                          return format(new Date(macroAnalysis.updatedAt), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
+                        } catch { return macroAnalysis.updatedAt; }
+                      })()}
+                    </p>
+                  )}
+                  {/* Mostrar aviso de API key APENAS quando for análise padrão (sem Groq) */}
+                  {macroAnalysis.isDefault && (
+                    <p className="text-xs text-amber-400 flex items-center gap-1">
+                      <Lightbulb className="w-3 h-3" />
+                      Configure sua API key do Groq nas Configurações para análises personalizadas com IA
+                    </p>
+                  )}
+                  {!macroAnalysis.isDefault && (
+                    <p className="text-xs text-emerald-400 flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" />
+                      Análise gerada com sucesso via Groq AI
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 

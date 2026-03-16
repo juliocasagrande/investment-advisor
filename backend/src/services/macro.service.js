@@ -129,6 +129,7 @@ O campo recommendedClass deve indicar claramente qual ÚNICA classe de ativo est
       
       const analysis = JSON.parse(cleanContent);
       analysis.isDefault = false;
+      analysis.updatedAt = analysis.updatedAt || new Date().toISOString();
       
       return analysis;
     } catch (error) {
@@ -186,12 +187,10 @@ O campo recommendedClass deve indicar claramente qual ÚNICA classe de ativo est
 
   async refreshAnalysis(userId) {
     try {
-      const today = new Date().toISOString().split('T')[0];
-      
-      // Deletar análise existente de hoje
+      // Deletar toda análise em cache para forçar nova geração com Groq
       await pool.query(
-        'DELETE FROM macro_analysis WHERE user_id = $1 AND DATE(created_at) = $2',
-        [userId, today]
+        'DELETE FROM macro_analysis WHERE user_id = $1',
+        [userId]
       );
       
       // Gerar nova análise
