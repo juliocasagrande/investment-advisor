@@ -124,10 +124,11 @@ function getCategoryFromClass(cls) {
 }
 
 function cleanClassName(name) {
-  // Remove emoji inicial + espaço, depois remove prefixo "Wallet " (case-insensitive)
+  // Remove qualquer emoji no início (qualquer char fora do ASCII básico seguido de espaço opcional)
+  // Depois remove prefixo "Wallet " case-insensitive
   return (name || '')
-    .replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}]\s*/u, '')
-    .replace(/^wallet\s*/i, '')
+    .replace(/^[^\w\s]+\s*/u, '')   // remove emoji/símbolos iniciais
+    .replace(/^wallet\s*/i, '')      // remove "Wallet "
     .trim();
 }
 
@@ -345,9 +346,9 @@ export default function Assets() {
 
   const classOptions = [
     { value: '', label: 'Todas as classes' },
-    ...classes.map(c => ({ value: c.id, label: cleanClassName(c.name), icon: c.icon }))
+    ...classes.map(c => ({ value: c.id, label: cleanClassName(c.name) }))
   ];
-  const classModalOptions = classes.map(c => ({ value: c.id, label: cleanClassName(c.name), icon: c.icon }));
+  const classModalOptions = classes.map(c => ({ value: c.id, label: cleanClassName(c.name) }));
 
   const renderField = (field) => {
     const value = formData[field.name] || '';
