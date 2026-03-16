@@ -698,12 +698,12 @@ export default function Screener() {
               ))}
             </div>
 
-            {/* Notice for US (slow API) */}
+            {/* Notice for US assets */}
             {(assetClass === 'stocks_us' || assetClass === 'reits') && (
-              <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-                <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-amber-300/80">
-                  A API AlphaVantage (plano gratuito) permite 5 requisições/minuto. A busca de ativos EUA pode levar vários minutos. Configure sua chave nas Configurações.
+              <div className="flex items-start gap-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-blue-300/80">
+                  Dados via Yahoo Finance — gratuito, sem configuração necessária. A busca analisa {assetClass === 'reits' ? '20 REITs' : '30 ações'} em paralelo.
                 </p>
               </div>
             )}
@@ -742,8 +742,7 @@ export default function Screener() {
                   <div className="loader mx-auto mb-4" />
                   <p className="text-slate-400 text-sm">Buscando e filtrando ativos...</p>
                   <p className="text-slate-600 text-xs mt-1">
-                    Analisando {selectedCls?.count || '—'} {selectedCls?.label}
-                    {(assetClass === 'stocks_us' || assetClass === 'reits') && ' · pode levar alguns minutos'}
+                    Analisando {selectedCls?.count || '—'} {selectedCls?.label} via Yahoo Finance
                   </p>
                 </div>
               </div>

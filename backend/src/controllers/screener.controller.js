@@ -1,24 +1,25 @@
+r · JS
+Copiar
+
 const pool = require('../config/database');
 const axios = require('axios'); // mantido apenas para Groq (POST)
  
 // ── Yahoo Finance — Cookie + Crumb ────────────────────────────────────────────
 // O Yahoo Finance exige um fluxo de autenticação de dois passos:
-// 1. GET https://fc.yahoo.com  → recebe cookie de sessão
-// 2. GET https://query2.finance.yahoo.com/v1/test/getcrumb (com o cookie) → recebe o crumb
-// 3. Todas as chamadas de dados usam o cookie + &crumb=<valor>
-//
-// O cookie/crumb é cacheado em memória e renovado quando expirar ou der 401.
+// 1. GET https://fc.yahoo.com  → cookie de sessão
+// 2. GET https://query2.finance.yahoo.com/v1/test/getcrumb (com o cookie) → crumb
+// 3. Todas as chamadas usam Cookie + &crumb=<valor>
+// Cookie/crumb ficam cacheados 55 min e renovam automaticamente.
  
 let _yahooCookie = null;
 let _yahooCrumb  = null;
 let _yahooLastFetch = 0;
-const CRUMB_TTL = 55 * 60 * 1000; // renovar a cada 55 minutos
+const CRUMB_TTL = 55 * 60 * 1000;
  
 const YAHOO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'application/json, text/plain, */*',
   'Accept-Language': 'en-US,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate, br',
   'Origin': 'https://finance.yahoo.com',
   'Referer': 'https://finance.yahoo.com/',
 };
@@ -28,68 +29,43 @@ async function getYahooCrumb(force = false) {
   if (!force && _yahooCrumb && (now - _yahooLastFetch) < CRUMB_TTL) {
     return { cookie: _yahooCookie, crumb: _yahooCrumb };
   }
- 
-  // Passo 1: obter cookie
-  const cookieRes = await fetch('https://fc.yahoo.com', {
-    headers: YAHOO_HEADERS,
-    redirect: 'follow',
-  });
+  const cookieRes = await fetch('https://fc.yahoo.com', { headers: YAHOO_HEADERS, redirect: 'follow' });
   const rawCookies = cookieRes.headers.getSetCookie?.() || [];
   const cookieStr = rawCookies.map(c => c.split(';')[0]).join('; ');
- 
-  // Passo 2: obter crumb usando o cookie
   const crumbRes = await fetch('https://query2.finance.yahoo.com/v1/test/getcrumb', {
     headers: { ...YAHOO_HEADERS, 'Cookie': cookieStr },
   });
-  const crumbText = await crumbRes.text();
-  const crumb = crumbText.trim();
- 
+  const crumb = (await crumbRes.text()).trim();
   if (!crumb || crumb.includes('<html>') || crumb.includes('Too Many')) {
     throw new Error(`Falha ao obter crumb do Yahoo Finance: ${crumb.substring(0, 80)}`);
   }
- 
   _yahooCookie = cookieStr;
   _yahooCrumb  = crumb;
   _yahooLastFetch = now;
- 
-  console.log('[Yahoo] Cookie/crumb renovados. Crumb:', crumb.substring(0, 15) + '...');
+  console.log('[Yahoo] Cookie/crumb renovados.');
   return { cookie: cookieStr, crumb };
 }
  
-async function yahooGetBR(ticker) {
-  const symbol = ticker.endsWith('.SA') ? ticker : `${ticker}.SA`;
+// Busca genérica Yahoo — BR usa sufixo .SA, US sem sufixo
+async function yahooGet(symbol) {
   const modules = 'defaultKeyStatistics,financialData,summaryDetail,price';
- 
-  // Tentar com crumb cacheado; se 401, renovar e tentar uma vez mais
   for (let attempt = 1; attempt <= 2; attempt++) {
     const { cookie, crumb } = await getYahooCrumb(attempt === 2);
     const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=${modules}&crumb=${encodeURIComponent(crumb)}&formatted=false&corsDomain=finance.yahoo.com`;
- 
-    console.log(`[Yahoo] Buscando ${symbol} (tentativa ${attempt})`);
-    const res = await fetch(url, {
-      headers: { ...YAHOO_HEADERS, 'Cookie': cookie },
-    });
- 
-    if (res.status === 401 && attempt === 1) {
-      console.warn('[Yahoo] 401 — renovando crumb...');
-      continue;
-    }
- 
-    if (!res.ok) {
-      const err = new Error(`Yahoo Finance HTTP ${res.status} para ${ticker}`);
-      err.status = res.status;
-      throw err;
-    }
- 
+    const res = await fetch(url, { headers: { ...YAHOO_HEADERS, 'Cookie': cookie } });
+    if (res.status === 401 && attempt === 1) { console.warn('[Yahoo] 401 — renovando crumb...'); continue; }
+    if (!res.ok) { const err = new Error(`Yahoo HTTP ${res.status} para ${symbol}`); err.status = res.status; throw err; }
     const data = await res.json();
     const error = data?.quoteSummary?.error;
     if (error) throw new Error(`Yahoo Finance: ${error.description || error.code}`);
- 
     const result = data?.quoteSummary?.result?.[0];
-    if (!result) throw new Error(`Sem dados para ${ticker} no Yahoo Finance`);
+    if (!result) throw new Error(`Sem dados para ${symbol}`);
     return result;
   }
 }
+ 
+const yahooGetBR = (ticker) => yahooGet(ticker.endsWith('.SA') ? ticker : `${ticker}.SA`);
+const yahooGetUS = (ticker) => yahooGet(ticker); // US sem sufixo
  
 // ── Auto-healing ──────────────────────────────────────────────────────────────
 async function ensureColumns() {
@@ -223,37 +199,42 @@ const REITS = [
 // ── Helpers ───────────────────────────────────────────────────────────────────
 async function getUserSettings(userId) {
   try {
-    const r = await pool.query(
-      'SELECT brapi_token, alphavantage_key, groq_api_key FROM user_settings WHERE user_id = $1',
-      [userId]
-    );
+    const r = await pool.query('SELECT brapi_token, alphavantage_key, groq_api_key FROM user_settings WHERE user_id = $1', [userId]);
     return r.rows[0] || {};
-  } catch (e) {
-    return {};
-  }
+  } catch (e) { return {}; }
 }
  
 const ANALYZABLE_CATEGORIES = new Set(['stocks_br', 'fiis', 'etfs', 'acoes_br']);
 const US_CATEGORIES = new Set(['stocks_us', 'reits']);
  
+// Executa um array de funções assíncronas em grupos de `concurrency`
+async function runConcurrent(tasks, concurrency = 5) {
+  const results = [];
+  for (let i = 0; i < tasks.length; i += concurrency) {
+    const batch = tasks.slice(i, i + concurrency);
+    const batchResults = await Promise.allSettled(batch.map(fn => fn()));
+    results.push(...batchResults);
+    if (i + concurrency < tasks.length) await new Promise(r => setTimeout(r, 500));
+  }
+  return results;
+}
+ 
 class ScreenerController {
  
+  // ── Buscar ativos com filtros (aba Buscar) ────────────────────────────────
   async search(req, res) {
     try {
       const userId = req.userId;
       const { filters = {}, assetClass = 'stocks_br' } = req.body;
       const settings = await getUserSettings(userId);
       const groqKey = settings.groq_api_key || process.env.GROQ_API_KEY;
-      let stocks = [];
  
-      if (assetClass === 'stocks_us' || assetClass === 'reits') {
-        const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
-        if (!alphaKey) return res.status(400).json({ error: 'Configure sua chave AlphaVantage nas configurações.' });
-        stocks = await this.fetchUSStocks(assetClass === 'reits' ? REITS : STOCKS_US, alphaKey, filters);
-      } else {
-        stocks = await this.fetchBRStocks(assetClass === 'fiis' ? FIIS : STOCKS_BR, filters);
-      }
+      // Tudo via Yahoo Finance — sem necessidade de tokens externos
+      const listMap = { stocks_br: STOCKS_BR, fiis: FIIS, stocks_us: STOCKS_US, reits: REITS };
+      const list = listMap[assetClass] || STOCKS_BR;
+      const isUS = assetClass === 'stocks_us' || assetClass === 'reits';
  
+      const stocks = await this.fetchStocksYahoo(list, filters, isUS);
       stocks.sort((a, b) => (b.score || 0) - (a.score || 0));
       const passed = stocks.filter(r => r.passFilters);
  
@@ -269,61 +250,45 @@ class ScreenerController {
     }
   }
  
-  async fetchBRStocks(list, filters) {
+  // ── Buscar lista de ativos via Yahoo Finance (BR ou US) ───────────────────
+  // Usa paralelismo de 5 em 5 para velocidade sem rate limit
+  async fetchStocksYahoo(list, filters, isUS = false) {
+    const unique = [...new Set(list)];
     const results = [];
-    for (const ticker of [...new Set(list)]) {
+ 
+    const tasks = unique.map(ticker => async () => {
       try {
-        const yData = await yahooGetBR(ticker);
+        const yData = isUS ? await yahooGetUS(ticker) : await yahooGetBR(ticker);
         const priceModule = yData.price || {};
         const fundamentals = this.extractYahooFundamentals(yData);
         const passFilters = this.applyFilters(fundamentals, filters);
         const score = this.calculateScore(fundamentals, filters) ?? 50;
-        results.push({
+        return {
           ticker,
           name: priceModule.longName || priceModule.shortName || ticker,
           price: priceModule.regularMarketPrice ?? null,
           change: priceModule.regularMarketChangePercent ?? null,
-          market: 'BR',
+          market: isUS ? 'US' : 'BR',
+          sector: yData.summaryProfile?.sector || null,
           ...fundamentals,
           score,
           passFilters,
           recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
-        });
+        };
       } catch (e) {
-        console.error(`Erro Yahoo BR ${ticker}:`, e.message);
+        console.error(`Erro Yahoo ${ticker}:`, e.message);
+        return null;
       }
-      await new Promise(r => setTimeout(r, 300));
+    });
+ 
+    const settled = await runConcurrent(tasks, 5);
+    for (const r of settled) {
+      if (r.status === 'fulfilled' && r.value) results.push(r.value);
     }
     return results;
   }
  
-  async fetchUSStocks(list, alphaKey, filters) {
-    const results = [];
-    for (const ticker of list) {
-      try {
-        const [quoteRes, overviewRes] = await Promise.allSettled([
-          axios.get('https://www.alphavantage.co/query', { params: { function: 'GLOBAL_QUOTE', symbol: ticker, apikey: alphaKey }, timeout: 10000 }),
-          axios.get('https://www.alphavantage.co/query', { params: { function: 'OVERVIEW', symbol: ticker, apikey: alphaKey }, timeout: 10000 })
-        ]);
-        const quote = quoteRes.status === 'fulfilled' ? quoteRes.value.data?.['Global Quote'] : null;
-        const overview = overviewRes.status === 'fulfilled' ? overviewRes.value.data : null;
-        if (!quote?.['05. price'] && !overview?.Symbol) continue;
-        const fundamentals = this.extractUSFundamentals(quote, overview);
-        const passFilters = this.applyFilters(fundamentals, filters);
-        const score = this.calculateScore(fundamentals, filters) ?? 50;
-        results.push({
-          ticker, name: overview?.Name || ticker,
-          price: parseFloat(quote?.['05. price'] || 0),
-          change: parseFloat(quote?.['10. change percent']?.replace('%', '') || 0),
-          market: 'US', sector: overview?.Sector, ...fundamentals, score, passFilters,
-          recommendation: score >= 70 ? 'COMPRAR' : score >= 50 ? 'MANTER' : 'AVALIAR'
-        });
-      } catch (e) { console.error(`Erro US ${ticker}:`, e.message); }
-      await new Promise(r => setTimeout(r, 13000));
-    }
-    return results;
-  }
- 
+  // ── Analisar posições do usuário ──────────────────────────────────────────
   async analyzePositions(req, res) {
     try {
       const userId = req.userId;
@@ -344,8 +309,7 @@ class ScreenerController {
       }
  
       const settings = await getUserSettings(userId);
-      const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
-      const groqKey  = settings.groq_api_key || process.env.GROQ_API_KEY;
+      const groqKey = settings.groq_api_key || process.env.GROQ_API_KEY;
  
       const isBRAnalyzable = (a) =>
         ANALYZABLE_CATEGORIES.has(a.class_category) || /^[A-Z]{3,6}\d{1,2}$/.test(a.ticker);
@@ -359,36 +323,30 @@ class ScreenerController {
       const analysis = [];
       let manter = 0, avaliarTroca = 0, totalScore = 0, scoredCount = 0;
  
-      // ── Análise BR via Yahoo Finance ──────────────────────────────────────
+      // ── Análise BR e FIIs via Yahoo Finance ───────────────────────────────
       for (const asset of brAssets) {
         try {
           console.log(`[Screener] Buscando ${asset.ticker} via Yahoo Finance`);
           const yData = await yahooGetBR(asset.ticker);
           const priceModule = yData.price || {};
- 
-          // Yahoo retorna os campos de price diretamente como número (formatted=false)
-          const currentPrice = priceModule.regularMarketPrice
-            ?? parseFloat(asset.current_price)
-            ?? parseFloat(asset.average_price);
+          const currentPrice = priceModule.regularMarketPrice ?? parseFloat(asset.current_price) ?? parseFloat(asset.average_price);
           const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;
- 
           const fundamentals = this.extractYahooFundamentals(yData);
           const hasAnyData = Object.values(fundamentals).some(v => v != null);
  
           if (!hasAnyData) {
             this.pushBasicPosition(analysis, asset, 'Indicadores não disponíveis no Yahoo Finance para este ativo');
             const last = analysis[analysis.length - 1];
-            last.currentPrice = currentPrice;
-            last.name = name;
+            last.currentPrice = currentPrice; last.name = name;
             Object.assign(last, this.calcPosition(asset, currentPrice));
             continue;
           }
  
-          const score        = this.calculateScore(fundamentals, filters);
-          const passFilters  = this.applyFilters(fundamentals, filters);
-          const violations   = this.getFilterViolations(fundamentals, filters);
+          const score = this.calculateScore(fundamentals, filters);
+          const passFilters = this.applyFilters(fundamentals, filters);
+          const violations  = this.getFilterViolations(fundamentals, filters);
           const effectiveScore = score ?? 50;
-          const action       = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
+          const action = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
  
           if (action === 'MANTER') manter++; else avaliarTroca++;
           if (score != null) { totalScore += score; scoredCount++; }
@@ -396,66 +354,67 @@ class ScreenerController {
           const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
           analysis.push({
             ticker: asset.ticker, name,
-            quantity: asset.quantity,
-            averagePrice: asset.average_price,
+            quantity: asset.quantity, averagePrice: asset.average_price,
             currentPrice, currentValue, gainPercent,
             qualityScore: score, passFilters, violations,
             recommendation: { action, reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations) },
-            fundamentals,
-            assetClass: asset.class_name,
-            market: 'BR'
+            fundamentals, assetClass: asset.class_name, market: 'BR'
           });
           console.log(`[Screener] ${asset.ticker} — score: ${score}, action: ${action}`);
         } catch (e) {
           console.error(`[Screener] ERRO ${asset.ticker}:`, e.message);
           const status = e.status;
           const errMsg = status === 404 ? 'Ativo não encontrado no Yahoo Finance'
-                       : status === 429 ? 'Rate limit do Yahoo Finance — tente novamente em instantes'
+                       : status === 429 ? 'Rate limit do Yahoo Finance — tente novamente'
                        : `Erro ao buscar dados (${e.message})`;
           this.pushBasicPosition(analysis, asset, errMsg);
         }
         await new Promise(r => setTimeout(r, 400));
       }
  
-      // ── Análise EUA via AlphaVantage ──────────────────────────────────────
-      if (usAssets.length > 0) {
-        if (!alphaKey) {
-          usAssets.forEach(a => this.pushBasicPosition(analysis, a, 'Configure AlphaVantage nas Configurações para analisar ações dos EUA'));
-        } else {
-          for (const asset of usAssets) {
-            try {
-              const [quoteRes, overviewRes] = await Promise.allSettled([
-                axios.get('https://www.alphavantage.co/query', { params: { function: 'GLOBAL_QUOTE', symbol: asset.ticker, apikey: alphaKey }, timeout: 10000 }),
-                axios.get('https://www.alphavantage.co/query', { params: { function: 'OVERVIEW', symbol: asset.ticker, apikey: alphaKey }, timeout: 10000 })
-              ]);
-              const quote    = quoteRes.status === 'fulfilled' ? quoteRes.value.data?.['Global Quote'] : null;
-              const overview = overviewRes.status === 'fulfilled' ? overviewRes.value.data : null;
-              if (!quote?.['05. price'] && !overview?.Symbol) { this.pushBasicPosition(analysis, asset, 'Dados não disponíveis na AlphaVantage'); continue; }
-              const currentPx = parseFloat(quote?.['05. price'] || asset.current_price || asset.average_price);
-              const fundamentals = this.extractUSFundamentals(quote, overview);
-              const score = this.calculateScore(fundamentals, filters);
-              const passFilters = this.applyFilters(fundamentals, filters);
-              const violations  = this.getFilterViolations(fundamentals, filters);
-              const effectiveScore = score ?? 50;
-              const action = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
-              if (action === 'MANTER') manter++; else avaliarTroca++;
-              if (score != null) { totalScore += score; scoredCount++; }
-              const { currentValue, gainPercent } = this.calcPosition(asset, currentPx);
-              analysis.push({
-                ticker: asset.ticker, name: overview?.Name || asset.name || asset.ticker,
-                quantity: asset.quantity, averagePrice: asset.average_price,
-                currentPrice: currentPx, currentValue, gainPercent,
-                qualityScore: score, passFilters, violations,
-                recommendation: { action, reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations) },
-                fundamentals, assetClass: asset.class_name, market: 'US', sector: overview?.Sector
-              });
-            } catch (e) {
-              console.error(`Erro US ${asset.ticker}:`, e.message);
-              this.pushBasicPosition(analysis, asset, 'Erro ao buscar dados na AlphaVantage');
-            }
-            await new Promise(r => setTimeout(r, 1000));
+      // ── Análise EUA via Yahoo Finance (sem precisar de AlphaVantage) ──────
+      for (const asset of usAssets) {
+        try {
+          console.log(`[Screener] Buscando ${asset.ticker} (US) via Yahoo Finance`);
+          const yData = await yahooGetUS(asset.ticker);
+          const priceModule = yData.price || {};
+          const currentPrice = priceModule.regularMarketPrice ?? parseFloat(asset.current_price) ?? parseFloat(asset.average_price);
+          const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;
+          const fundamentals = this.extractYahooFundamentals(yData);
+          const hasAnyData = Object.values(fundamentals).some(v => v != null);
+ 
+          if (!hasAnyData) {
+            this.pushBasicPosition(analysis, asset, 'Indicadores não disponíveis no Yahoo Finance para este ativo');
+            const last = analysis[analysis.length - 1];
+            last.currentPrice = currentPrice; last.name = name;
+            Object.assign(last, this.calcPosition(asset, currentPrice));
+            continue;
           }
+ 
+          const score = this.calculateScore(fundamentals, filters);
+          const passFilters = this.applyFilters(fundamentals, filters);
+          const violations  = this.getFilterViolations(fundamentals, filters);
+          const effectiveScore = score ?? 50;
+          const action = (passFilters && effectiveScore >= 55) ? 'MANTER' : 'AVALIAR_TROCA';
+ 
+          if (action === 'MANTER') manter++; else avaliarTroca++;
+          if (score != null) { totalScore += score; scoredCount++; }
+ 
+          const { currentValue, gainPercent } = this.calcPosition(asset, currentPrice);
+          analysis.push({
+            ticker: asset.ticker, name,
+            quantity: asset.quantity, averagePrice: asset.average_price,
+            currentPrice, currentValue, gainPercent,
+            qualityScore: score, passFilters, violations,
+            recommendation: { action, reason: this.getRecommendationReason(fundamentals, effectiveScore, passFilters, violations) },
+            fundamentals, assetClass: asset.class_name, market: 'US',
+            sector: yData.summaryProfile?.sector || null
+          });
+        } catch (e) {
+          console.error(`[Screener] ERRO US ${asset.ticker}:`, e.message);
+          this.pushBasicPosition(analysis, asset, `Erro ao buscar dados (${e.message})`);
         }
+        await new Promise(r => setTimeout(r, 400));
       }
  
       // ── Outros (renda fixa, cripto, etc.) ────────────────────────────────
@@ -498,6 +457,7 @@ class ScreenerController {
     }
   }
  
+  // ── Sugestões de troca ────────────────────────────────────────────────────
   async getSuggestions(req, res) {
     try {
       const { ticker, filters = {} } = req.body;
@@ -525,7 +485,9 @@ class ScreenerController {
   async getFundamentals(req, res) {
     try {
       const { ticker } = req.params;
-      const yData = await yahooGetBR(ticker);
+      // Detectar se é ativo BR ou US pelo padrão do ticker
+      const isBR = /^[A-Z]{3,6}\d{1,2}$/.test(ticker);
+      const yData = isBR ? await yahooGetBR(ticker) : await yahooGetUS(ticker);
       const priceModule = yData.price || {};
       const fundamentals = this.extractYahooFundamentals(yData);
       return res.json({
@@ -554,34 +516,28 @@ class ScreenerController {
   }
  
   // ── Extração de fundamentals — Yahoo Finance ──────────────────────────────
-  // Com formatted=false, Yahoo retorna números diretos (não { raw, fmt })
-  // Estrutura:
-  //   price:                regularMarketPrice, longName, shortName, regularMarketChangePercent
-  //   defaultKeyStatistics: forwardPE, priceToBook, enterpriseToEbitda, dividendYield
-  //   financialData:        currentRatio, debtToEquity (escala %, /100), returnOnAssets,
-  //                         returnOnEquity, revenueGrowth, operatingMargins, profitMargins
-  //   summaryDetail:        trailingPE, dividendYield, priceToSalesTrailing12Months
+  // Com formatted=false, campos chegam como número direto.
+  // Alguns módulos ainda retornam { raw, fmt } — n() trata os dois casos.
+  // debtToEquity vem em escala percentual (101.6 = 1.016x) → dividir por 100
   extractYahooFundamentals(yData) {
     const ks = yData.defaultKeyStatistics || {};
     const fd = yData.financialData        || {};
     const sd = yData.summaryDetail        || {};
  
-    // Com formatted=false os valores chegam direto como number ou null
-    // Porém alguns módulos ainda podem retornar { raw, fmt } — tratar os dois casos
     const n = (v) => {
       if (v == null) return null;
-      const val = typeof v === 'object' ? v.raw ?? v.fmt : v;
+      const val = typeof v === 'object' ? (v.raw ?? v.fmt) : v;
       const f = parseFloat(val);
       return isNaN(f) || !isFinite(f) ? null : f;
     };
     const pct = (v) => { const x = n(v); return x != null ? x * 100 : null; };
  
-    const pl      = n(sd.trailingPE)  ?? n(ks.forwardPE) ?? n(sd.forwardPE);
+    const pl      = n(sd.trailingPE) ?? n(ks.forwardPE) ?? n(sd.forwardPE);
     const pvp     = n(ks.priceToBook);
     const dy      = (() => {
       const v = n(sd.dividendYield) ?? n(ks.dividendYield);
       if (v == null) return null;
-      return v > 1 ? v : v * 100; // Yahoo às vezes retorna 5.2 ou 0.052
+      return v > 1 ? v : v * 100;
     })();
     const evEbitda         = n(ks.enterpriseToEbitda);
     const psr              = n(sd.priceToSalesTrailing12Months);
@@ -596,24 +552,7 @@ class ScreenerController {
     return { pl, pvp, psr, dy, evEbitda, margemEbit, margemLiquida, liquidezCorrente, roic, roe, dividaPl, crescReceita };
   }
  
-  extractUSFundamentals(quote, overview) {
-    const safe = (v) => { const n = parseFloat(v); return isNaN(n) || !isFinite(n) ? null : n; };
-    return {
-      pl:               safe(overview?.PERatio),
-      pvp:              safe(overview?.PriceToBookRatio),
-      psr:              safe(overview?.PriceToSalesRatioTTM),
-      dy:               overview?.DividendYield ? safe(overview.DividendYield) * 100 : null,
-      evEbitda:         safe(overview?.EVToEBITDA),
-      margemEbit:       safe(overview?.OperatingMarginTTM) != null ? safe(overview.OperatingMarginTTM) * 100 : null,
-      margemLiquida:    safe(overview?.ProfitMargin)        != null ? safe(overview.ProfitMargin) * 100        : null,
-      liquidezCorrente: safe(overview?.CurrentRatio),
-      roic:             safe(overview?.ReturnOnAssetsTTM)   != null ? safe(overview.ReturnOnAssetsTTM) * 100   : null,
-      roe:              safe(overview?.ReturnOnEquityTTM)   != null ? safe(overview.ReturnOnEquityTTM) * 100   : null,
-      dividaPl:         safe(overview?.DebtToEquityRatio),
-      crescReceita:     safe(overview?.QuarterlyRevenueGrowthYOY) != null ? safe(overview.QuarterlyRevenueGrowthYOY) * 100 : null,
-    };
-  }
- 
+  // ── Filtros ───────────────────────────────────────────────────────────────
   applyFilters(data, filters) {
     if (!filters || Object.keys(filters).length === 0) return true;
     const map = {
@@ -745,15 +684,14 @@ class ScreenerController {
       `${s.ticker}(${s.market||'BR'}): Score=${s.score}, P/L=${s.pl?.toFixed(1)??'-'}, DY=${s.dy?.toFixed(1)??'-'}%, ROE=${s.roe?.toFixed(1)??'-'}%`
     ).join('\n');
     const filtersDesc = Object.entries(filters).filter(([,v])=>v!=null).map(([k,v])=>`${k}=${v}`).join(', ');
-    const prompt = `Analista de ações. Filtros do investidor: ${filtersDesc||'padrão'}.\nAtivos que passaram:\n${summary}\nRetorne APENAS JSON:\n{"topPicks":[{"ticker":"XX","reason":"motivo","conviction":"alta|media|baixa","horizon":"curto|medio|longo prazo"}],"marketComment":"2-3 frases","riskWarning":"1 frase"}\nMáximo 3 topPicks.`;
+    const prompt = `Analista de ações. Filtros: ${filtersDesc||'padrão'}.\nAtivos:\n${summary}\nRetorne APENAS JSON:\n{"topPicks":[{"ticker":"XX","reason":"motivo","conviction":"alta|media|baixa","horizon":"curto|medio|longo prazo"}],"marketComment":"2-3 frases","riskWarning":"1 frase"}\nMáximo 3 topPicks.`;
     const resp = await axios.post('https://api.groq.com/openai/v1/chat/completions',
       { model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: 'Analista financeiro. Responda APENAS com JSON válido, sem markdown.' }, { role: 'user', content: prompt }], max_tokens: 800, temperature: 0.5 },
       { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 25000 }
     );
     const content = resp.data?.choices?.[0]?.message?.content || '';
     const clean = content.trim().replace(/```json\s*/g,'').replace(/```\s*/g,'');
-    const match = clean.match(/\{[\s\S]*\}/);
-    return JSON.parse(match ? match[0] : clean);
+    return JSON.parse((clean.match(/\{[\s\S]*\}/) || [clean])[0]);
   }
  
   async getAIPortfolioAnalysis(apiKey, positions, filters) {
@@ -774,8 +712,7 @@ class ScreenerController {
     );
     const content = resp.data?.choices?.[0]?.message?.content || '';
     const clean = content.trim().replace(/```json\s*/g,'').replace(/```\s*/g,'');
-    const match = clean.match(/\{[\s\S]*\}/);
-    return JSON.parse(match ? match[0] : clean);
+    return JSON.parse((clean.match(/\{[\s\S]*\}/) || [clean])[0]);
   }
 }
  
