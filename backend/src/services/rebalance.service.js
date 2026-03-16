@@ -55,105 +55,107 @@ class RebalanceService {
 
   async calculatePassiveIncome(userId) {
     try {
-      // Buscar dividendos dos últimos 12 meses
+      // 1. Dividendos reais recebidos nos últimos 12 meses
       const dividendsResult = await pool.query(`
         SELECT COALESCE(SUM(amount), 0) as total
         FROM dividends
         WHERE user_id = $1 AND payment_date >= NOW() - INTERVAL '12 months'
       `, [userId]);
-
       const annualDividends = parseFloat(dividendsResult.rows[0]?.total || 0);
 
-      // Estimar com base no yield das classes
-      const classesResult = await pool.query(`
-        SELECT ac.id, ac.name, ac.expected_yield, ac.color,
-          COALESCE(SUM(a.quantity * COALESCE(a.current_price, a.average_price)), 0) as value
-        FROM asset_classes ac
-        LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = $1 AND a.quantity > 0
-        WHERE ac.user_id = $1
-        GROUP BY ac.id, ac.name, ac.expected_yield, ac.color
+      // 2. Buscar todos os ativos com preço atual, DY e classe
+      const assetsResult = await pool.query(`
+        SELECT 
+          a.id, a.ticker, a.quantity,
+          COALESCE(a.current_price, a.average_price) as price,
+          a.dividend_yield,
+          ac.name as class_name,
+          ac.color,
+          ac.expected_yield
+        FROM assets a
+        LEFT JOIN asset_classes ac ON ac.id = a.asset_class_id
+        WHERE a.user_id = $1 AND a.quantity > 0
+        ORDER BY (a.quantity * COALESCE(a.current_price, a.average_price)) DESC
       `, [userId]);
-
-      // Fallback: se não encontrou classes com valor, buscar ativos direto
-      const totalFromClasses = classesResult.rows.reduce((sum, r) => sum + parseFloat(r.value || 0), 0);
-      
-      let assetsDirectResult = { rows: [] };
-      if (totalFromClasses === 0) {
-        assetsDirectResult = await pool.query(`
-          SELECT 
-            COALESCE(ac.name, a.asset_type, 'Outros') as class_name,
-            COALESCE(ac.color, '#3B82F6') as color,
-            COALESCE(ac.expected_yield, 8) as expected_yield,
-            SUM(a.quantity * COALESCE(a.current_price, a.average_price)) as value
-          FROM assets a
-          LEFT JOIN asset_classes ac ON ac.id = a.asset_class_id
-          WHERE a.user_id = $1 AND a.quantity > 0
-          GROUP BY COALESCE(ac.name, a.asset_type, 'Outros'), COALESCE(ac.color, '#3B82F6'), COALESCE(ac.expected_yield, 8)
-        `, [userId]);
-      }
 
       let estimatedAnnual = 0;
       const breakdown = [];
+      // Agrupar por classe para o breakdown
+      const classMap = {};
 
-      // Usar classes se tiver valor, senão usar fallback direto de ativos
-      const rowsToProcess = totalFromClasses > 0 
-        ? classesResult.rows 
-        : assetsDirectResult.rows.map(r => ({
-            name: r.class_name,
-            color: r.color,
-            expected_yield: r.expected_yield,
-            value: r.value
-          }));
+      for (const asset of assetsResult.rows) {
+        const value = parseFloat(asset.quantity) * parseFloat(asset.price || 0);
+        if (value <= 0) continue;
 
-      for (const cls of rowsToProcess) {
-        const value = parseFloat(cls.value) || 0;
-        // Usar expected_yield se existir, senão usar um default baseado no tipo de ativo
-        let yieldPercent = parseFloat(cls.expected_yield) || 0;
-        
-        // Se não tem yield configurado mas tem valor, estimar baseado em médias de mercado
-        if (yieldPercent === 0 && value > 0) {
-          const name = (cls.name || '').toLowerCase();
-          if (name.includes('renda fixa') || name.includes('tesouro') || name.includes('cdb')) {
-            yieldPercent = 10; // ~10% para renda fixa
-          } else if (name.includes('fii') || name.includes('imobiliário')) {
-            yieldPercent = 8; // ~8% para FIIs
-          } else if (name.includes('ação') || name.includes('ações') || name.includes('dividendo')) {
-            yieldPercent = 6; // ~6% para ações dividendos
-          } else if (name.includes('reit') || name.includes('eua') || name.includes('internacional')) {
-            yieldPercent = 4; // ~4% para REITs/internacional
-          } else if (name.includes('cripto') || name.includes('crypto')) {
-            yieldPercent = 0; // Cripto não gera renda passiva
-          } else if (name.includes('metal') || name.includes('ouro')) {
-            yieldPercent = 0; // Metais não geram renda
+        // Prioridade: 1) dividend_yield do ativo (salvo no sync) 
+        //             2) expected_yield da classe
+        //             3) estimativa por nome da classe
+        let yieldPercent = 0;
+
+        if (asset.dividend_yield && parseFloat(asset.dividend_yield) > 0) {
+          yieldPercent = parseFloat(asset.dividend_yield);
+        } else if (asset.expected_yield && parseFloat(asset.expected_yield) > 0) {
+          yieldPercent = parseFloat(asset.expected_yield);
+        } else {
+          // Estimativa por tipo de ativo baseada no nome da classe
+          const name = (asset.class_name || '').toLowerCase();
+          if (name.includes('renda fixa') || name.includes('tesouro') || name.includes('cdb') || name.includes('lci') || name.includes('lca')) {
+            yieldPercent = 11;
+          } else if (name.includes('fii') || name.includes('imobiliário') || name.includes('real estate')) {
+            yieldPercent = 8;
+          } else if (name.includes('dividendo') || name.includes('dividend')) {
+            yieldPercent = 6;
+          } else if (name.includes('ação') || name.includes('ações') || name.includes('br')) {
+            yieldPercent = 4;
+          } else if (name.includes('reit')) {
+            yieldPercent = 5;
+          } else if (name.includes('eua') || name.includes('us') || name.includes('internacional')) {
+            yieldPercent = 3;
+          } else if (name.includes('cripto') || name.includes('crypto') || name.includes('metal') || name.includes('ouro')) {
+            yieldPercent = 0;
           } else {
-            yieldPercent = 5; // Default 5%
+            yieldPercent = 5;
           }
         }
-        
+
         const estimated = value * (yieldPercent / 100);
         estimatedAnnual += estimated;
-        
-        if (value > 0) {
-          breakdown.push({
-            name: cls.name,
-            color: cls.color,
-            value,
+
+        // Agrupar por classe para o breakdown
+        const cls = asset.class_name || 'Outros';
+        if (!classMap[cls]) {
+          classMap[cls] = {
+            name: cls,
+            color: asset.color || '#3B82F6',
+            value: 0,
             yieldPercent,
-            estimatedAnnual: estimated,
-            estimatedMonthly: estimated / 12
+            estimatedAnnual: 0,
+          };
+        }
+        classMap[cls].value += value;
+        classMap[cls].estimatedAnnual += estimated;
+        // Média ponderada do yield da classe
+        classMap[cls].yieldPercent = (classMap[cls].estimatedAnnual / classMap[cls].value) * 100;
+      }
+
+      for (const cls of Object.values(classMap)) {
+        if (cls.value > 0) {
+          breakdown.push({
+            ...cls,
+            estimatedMonthly: cls.estimatedAnnual / 12,
           });
         }
       }
 
-      // Se há dividendos reais registrados, usar eles; caso contrário usar estimativa
-      const finalAnnual = annualDividends > 0 ? annualDividends : estimatedAnnual;
+      // Se há dividendos reais registrados (> estimativa), usar os reais
+      const finalAnnual = annualDividends > estimatedAnnual * 0.5 ? annualDividends : estimatedAnnual;
 
       return {
         totalMonthly: Math.round(finalAnnual / 12 * 100) / 100,
         totalAnnual: Math.round(finalAnnual * 100) / 100,
         realizedLast12Months: annualDividends,
         estimatedAnnual: Math.round(estimatedAnnual * 100) / 100,
-        breakdown
+        breakdown,
       };
     } catch (error) {
       console.error('Erro ao calcular renda passiva:', error.message, error.stack);

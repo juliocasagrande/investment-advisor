@@ -40,10 +40,10 @@ const FILTER_CONFIG = [
 ];
 
 const ASSET_CLASSES = [
-  { id: 'stocks_br', label: 'Ações BR',   icon: '🇧🇷', currency: 'BRL', count: 118 },
-  { id: 'fiis',      label: 'FIIs',       icon: '🏢', currency: 'BRL', count: 48 },
-  { id: 'stocks_us', label: 'Ações EUA',  icon: '🇺🇸', currency: 'USD', count: 59 },
-  { id: 'reits',     label: 'REITs',      icon: '🏠', currency: 'USD', count: 33 },
+  { id: 'stocks_br', label: 'Ações BR',   icon: '🇧🇷', currency: 'BRL', count: 136 },
+  { id: 'fiis',      label: 'FIIs',       icon: '🏢', currency: 'BRL', count: 60 },
+  { id: 'stocks_us', label: 'Ações EUA',  icon: '🇺🇸', currency: 'USD', count: 89 },
+  { id: 'reits',     label: 'REITs',      icon: '🏠', currency: 'USD', count: 40 },
 ];
 
 // Mapeamento Yahoo Finance sector → setor em português
@@ -866,7 +866,7 @@ export default function Screener() {
               <div className="flex items-start gap-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
                 <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-blue-300/80">
-                  Dados via Yahoo Finance — gratuito, sem configuração necessária. A busca analisa {assetClass === 'reits' ? '20 REITs' : '30 ações'} em paralelo.
+                  Dados via Yahoo Finance — gratuito, sem configuração necessária. A busca analisa {selectedCls?.count || '—'} ativos com cache de 8 min e 4 requisições paralelas.
                 </p>
               </div>
             )}

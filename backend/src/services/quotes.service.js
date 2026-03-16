@@ -158,13 +158,13 @@ class QuotesService {
           const quote = await this.getQuote(asset.ticker, asset.market, brapiToken, alphaKey);
           
           if (quote && quote.price) {
-            // Usar apenas colunas que existem com certeza
             await client.query(`
               UPDATE assets SET 
                 current_price = $1,
+                dividend_yield = COALESCE($2, dividend_yield),
                 updated_at = NOW()
-              WHERE id = $2
-            `, [quote.price, asset.id]);
+              WHERE id = $3
+            `, [quote.price, quote.dividendYield || null, asset.id]);
 
             results.success.push({ ticker: asset.ticker, price: quote.price });
           } else {

@@ -2,12 +2,6 @@ const pool = require('../config/database');
 const axios = require('axios'); // mantido apenas para Groq (POST)
 
 // ── Yahoo Finance — Cookie + Crumb ────────────────────────────────────────────
-// O Yahoo Finance exige um fluxo de autenticação de dois passos:
-// 1. GET https://fc.yahoo.com  → cookie de sessão
-// 2. GET https://query2.finance.yahoo.com/v1/test/getcrumb (com o cookie) → crumb
-// 3. Todas as chamadas usam Cookie + &crumb=<valor>
-// Cookie/crumb ficam cacheados 55 min e renovam automaticamente.
-
 let _yahooCookie = null;
 let _yahooCrumb  = null;
 let _yahooLastFetch = 0;
@@ -20,6 +14,34 @@ const YAHOO_HEADERS = {
   'Origin': 'https://finance.yahoo.com',
   'Referer': 'https://finance.yahoo.com/',
 };
+
+// ── Cache de resultados Yahoo (8 min) + Concorrência controlada (4 paralelas) ─
+// Cache: evita rebuscar o mesmo ticker em curta janela de tempo.
+// Concorrência: batches de 4 com 300ms entre grupos → ~20–30s para 328 ativos.
+const _yahooCache = new Map();
+const CACHE_TTL   = 8 * 60 * 1000;
+const CONCURRENCY = 4;
+const DELAY_MS    = 300;
+
+function getCached(symbol) {
+  const entry = _yahooCache.get(symbol);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) { _yahooCache.delete(symbol); return null; }
+  return entry.data;
+}
+function setCache(symbol, data) {
+  _yahooCache.set(symbol, { data, ts: Date.now() });
+}
+async function fetchWithConcurrency(tickers, fetchFn) {
+  const results = [];
+  for (let i = 0; i < tickers.length; i += CONCURRENCY) {
+    const batch = tickers.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.allSettled(batch.map(fetchFn));
+    results.push(...batchResults);
+    if (i + CONCURRENCY < tickers.length) await new Promise(r => setTimeout(r, DELAY_MS));
+  }
+  return results;
+}
 
 async function getYahooCrumb(force = false) {
   const now = Date.now();
@@ -45,6 +67,9 @@ async function getYahooCrumb(force = false) {
 
 // Busca genérica Yahoo — BR usa sufixo .SA, US sem sufixo
 async function yahooGet(symbol) {
+  const cached = getCached(symbol);
+  if (cached) return cached;
+
   const modules = 'defaultKeyStatistics,financialData,summaryDetail,price,calendarEvents';
   for (let attempt = 1; attempt <= 2; attempt++) {
     const { cookie, crumb } = await getYahooCrumb(attempt === 2);
@@ -57,12 +82,13 @@ async function yahooGet(symbol) {
     if (error) throw new Error(`Yahoo Finance: ${error.description || error.code}`);
     const result = data?.quoteSummary?.result?.[0];
     if (!result) throw new Error(`Sem dados para ${symbol}`);
+    setCache(symbol, result);
     return result;
   }
 }
 
 const yahooGetBR = (ticker) => yahooGet(ticker.endsWith('.SA') ? ticker : `${ticker}.SA`);
-const yahooGetUS = (ticker) => yahooGet(ticker); // US sem sufixo
+const yahooGetUS = (ticker) => yahooGet(ticker);
 
 // ── Auto-healing ──────────────────────────────────────────────────────────────
 async function ensureColumns() {
@@ -87,51 +113,61 @@ async function ensureColumns() {
 ensureColumns().catch(e => console.error('screener ensureColumns:', e.message));
 
 // ── Listas de ativos e mapa de setores ───────────────────────────────────────
-// O mapa de setores é estático (baseado na lista do usuário) pois o Yahoo Finance
-// não retorna summaryProfile nos módulos gratuitos de forma confiável.
+// Mapa estático: ticker → setor em português
+// O Yahoo Finance não retorna summaryProfile de forma confiável nos módulos gratuitos.
 
 const SECTOR_MAP = {
-  // Bancos e Financeiras
-  'ITUB4':'Financeiro','BBDC4':'Financeiro','BBAS3':'Financeiro','SANB11':'Financeiro',
-  'ITSA4':'Financeiro','BPAC11':'Financeiro','BBSE3':'Financeiro','B3SA3':'Financeiro',
-  'PSSA3':'Financeiro','CIEL3':'Financeiro','IRBR3':'Financeiro','CARD3':'Financeiro',
-  'WIZC3':'Financeiro','PORT3':'Financeiro','CASH3':'Financeiro',
+  // Financeiro
+  'ITUB4':'Financeiro','ITUB3':'Financeiro','BBDC4':'Financeiro','BBDC3':'Financeiro',
+  'BBAS3':'Financeiro','SANB11':'Financeiro','ITSA4':'Financeiro','BPAC11':'Financeiro',
+  'BBSE3':'Financeiro','B3SA3':'Financeiro','PSSA3':'Financeiro','CIEL3':'Financeiro',
+  'IRBR3':'Financeiro','CASH3':'Financeiro','BMGB4':'Financeiro','BRAP4':'Financeiro',
   // Petróleo e Gás
   'PETR4':'Petróleo e Gás','PETR3':'Petróleo e Gás','PRIO3':'Petróleo e Gás',
   'RRRP3':'Petróleo e Gás','RECV3':'Petróleo e Gás','CSAN3':'Petróleo e Gás',
   'RAIZ4':'Petróleo e Gás','UGPA3':'Petróleo e Gás','VBBR3':'Petróleo e Gás',
+  'BRKM5':'Petróleo e Gás','DXCO3':'Petróleo e Gás',
   // Energia Elétrica
-  'ELET3':'Energia','ELET6':'Energia','CMIG4':'Energia','CPFE3':'Energia',
-  'EGIE3':'Energia','TAEE11':'Energia','ENBR3':'Energia','AESB3':'Energia',
-  'EQTL3':'Energia','TRPL4':'Energia','ALUP11':'Energia','ENGI11':'Energia',
-  'CPLE6':'Energia','NEOE3':'Energia','MEGA3':'Energia',
+  'ELET3':'Energia','ELET6':'Energia','CMIG4':'Energia','CMIG3':'Energia',
+  'CPFE3':'Energia','CPLE3':'Energia','CPLE6':'Energia','EGIE3':'Energia',
+  'TAEE11':'Energia','ENBR3':'Energia','AESB3':'Energia','EQTL3':'Energia',
+  'TRPL4':'Energia','ALUP11':'Energia','ENGI11':'Energia','NEOE3':'Energia',
+  'MEGA3':'Energia','AMBP3':'Energia',
   // Mineração e Siderurgia
-  'VALE3':'Mineração','GGBR4':'Siderurgia','CSNA3':'Siderurgia','USIM5':'Siderurgia',
-  'GOAU4':'Siderurgia','CMIN3':'Mineração','BRAP4':'Mineração',
+  'VALE3':'Mineração','CMIN3':'Mineração','BAHI3':'Mineração',
+  'GGBR4':'Siderurgia','GGBR3':'Siderurgia','CSNA3':'Siderurgia',
+  'USIM5':'Siderurgia','GOAU4':'Siderurgia',
   // Papel e Celulose
   'SUZB3':'Papel e Celulose','KLBN11':'Papel e Celulose','RANI3':'Papel e Celulose',
-  // Indústria
+  // Indústria e Bens de Capital
   'WEGE3':'Indústria','EMBR3':'Indústria','TUPY3':'Indústria','ROMI3':'Indústria',
-  'POMO4':'Indústria','KEPL3':'Indústria',
+  'POMO4':'Indústria','KEPL3':'Indústria','INTB3':'Indústria','MYPK3':'Indústria',
+  'FRAS3':'Indústria','RAPT4':'Indústria','CBAV3':'Indústria',
   // Logística e Transporte
   'RAIL3':'Logística','CCRO3':'Logística','ECOR3':'Logística','LOGG3':'Logística',
   'JSLG3':'Logística','MOVI3':'Logística','SIMH3':'Logística','HBSA3':'Logística',
   // Varejo
   'LREN3':'Varejo','ARZZ3':'Varejo','SOMA3':'Varejo','VIVA3':'Varejo',
   'CEAB3':'Varejo','GUAR3':'Varejo','MGLU3':'Varejo','VIIA3':'Varejo',
-  'AMER3':'Varejo','BHIA3':'Varejo','PETZ3':'Varejo','GMAT3':'Varejo','CAMB3':'Varejo',
+  'AMER3':'Varejo','BHIA3':'Varejo','PETZ3':'Varejo','GMAT3':'Varejo',
+  'AMAR3':'Varejo','RENT3':'Varejo',
   // Consumo e Alimentos
   'ABEV3':'Consumo','BRFS3':'Alimentos','MRFG3':'Alimentos','JBSS3':'Alimentos',
   'MDIA3':'Alimentos','SMTO3':'Alimentos','SLCE3':'Alimentos','BEEF3':'Alimentos',
   'CRFB3':'Consumo','ASAI3':'Consumo','PCAR3':'Consumo','CAML3':'Alimentos',
+  'NTCO3':'Consumo',
   // Saúde
   'RDOR3':'Saúde','HAPV3':'Saúde','QUAL3':'Saúde','FLRY3':'Saúde',
-  'DASA3':'Saúde','ODPV3':'Saúde','HYPE3':'Saúde','VVEO3':'Saúde','MATD3':'Saúde',
+  'DASA3':'Saúde','ODPV3':'Saúde','HYPE3':'Saúde','VVEO3':'Saúde',
+  'PARD3':'Saúde','ANIM3':'Saúde',
   // Tecnologia
   'TOTS3':'Tecnologia','POSI3':'Tecnologia','LWSA3':'Tecnologia','SQIA3':'Tecnologia',
+  'YDUQ3':'Tecnologia',
+  // Educação
+  'COGN3':'Educação',
   // Telecom
   'VIVT3':'Telecom','TIMS3':'Telecom','OIBR3':'Telecom',
-  // Construção
+  // Construção e Imobiliário
   'MRVE3':'Construção','EZTC3':'Construção','EVEN3':'Construção','CYRE3':'Construção',
   'DIRR3':'Construção','TEND3':'Construção','TRIS3':'Construção','JHSF3':'Construção',
   'HBOR3':'Construção','LAVV3':'Construção','CURY3':'Construção','PLPL3':'Construção',
@@ -140,109 +176,142 @@ const SECTOR_MAP = {
   // Saneamento
   'SBSP3':'Saneamento','SAPR11':'Saneamento','CSMG3':'Saneamento',
   // Diversificados
-  'GRND3':'Diversificado','NTCO3':'Diversificado','ALPA4':'Diversificado',
-  'MYPK3':'Diversificado','FRAS3':'Diversificado','RAPT4':'Diversificado',
+  'GRND3':'Diversificado','ALPA4':'Diversificado','DXCO3':'Diversificado',
+  'CVCB3':'Turismo',
   // FIIs por tipo
   'MXRF11':'FII - Papel','CPTS11':'FII - Papel','KNCR11':'FII - Papel',
-  'KNIP11':'FII - Papel','HGLG11':'FII - Logístico','BTLG11':'FII - Logístico',
-  'XPLG11':'FII - Logístico','VILG11':'FII - Logístico','XPML11':'FII - Shopping',
-  'VISC11':'FII - Shopping','HSML11':'FII - Shopping','HGBS11':'FII - Shopping',
-  'KNRI11':'FII - Híbrido','HGRE11':'FII - Escritório','BRCR11':'FII - Escritório',
-  'RBHG11':'FII - Híbrido','RBRF11':'FII - FoF','KFOF11':'FII - FoF',
-  'MGFF11':'FII - FoF','HFOF11':'FII - FoF','IRDM11':'FII - Papel',
-  'VGIP11':'FII - Papel','RECR11':'FII - Papel','RBRP11':'FII - Híbrido',
-  'LVBI11':'FII - Logístico','GGRC11':'FII - Logístico','BTCR11':'FII - Papel',
+  'KNIP11':'FII - Papel','IRDM11':'FII - Papel','VGIP11':'FII - Papel',
+  'RECR11':'FII - Papel','BTCR11':'FII - Papel','MCCI11':'FII - Papel',
+  'KNHY11':'FII - Papel','DEVA11':'FII - Papel','PLCR11':'FII - Papel',
+  'CVBI11':'FII - Papel','KNSC11':'FII - Papel','VGIR11':'FII - Papel',
+  'BCRI11':'FII - Papel','HGCR11':'FII - Papel','BARI11':'FII - Papel',
+  'AFHI11':'FII - Papel','ARRI11':'FII - Papel','SNFF11':'FII - Papel',
+  'URPR11':'FII - Papel','HABT11':'FII - Papel','HCTR11':'FII - Papel',
+  'FEXC11':'FII - Papel','CARE11':'FII - Papel','TGAR11':'FII - Papel',
+  'XPIN11':'FII - Papel',
+  'HGLG11':'FII - Logístico','BTLG11':'FII - Logístico','XPLG11':'FII - Logístico',
+  'VILG11':'FII - Logístico','LVBI11':'FII - Logístico','GGRC11':'FII - Logístico',
   'PATL11':'FII - Logístico','TRXF11':'FII - Logístico','BLMG11':'FII - Logístico',
-  'HSLG11':'FII - Logístico','MCCI11':'FII - Papel','KNHY11':'FII - Papel',
-  'DEVA11':'FII - Papel','PLCR11':'FII - Papel','CVBI11':'FII - Papel',
-  'KNSC11':'FII - Papel','VGIR11':'FII - Papel','MALL11':'FII - Shopping',
-  'PVBI11':'FII - Escritório','JSRE11':'FII - Escritório','BCRI11':'FII - Papel',
-  'HGPO11':'FII - Escritório','RNGO11':'FII - Escritório','BCFF11':'FII - FoF',
-  'XPSF11':'FII - FoF',
+  'HSLG11':'FII - Logístico','ALZR11':'FII - Logístico',
+  'XPML11':'FII - Shopping','VISC11':'FII - Shopping','HSML11':'FII - Shopping',
+  'HGBS11':'FII - Shopping','MALL11':'FII - Shopping',
+  'HGRE11':'FII - Escritório','BRCR11':'FII - Escritório','PVBI11':'FII - Escritório',
+  'JSRE11':'FII - Escritório','HGPO11':'FII - Escritório','RNGO11':'FII - Escritório',
+  'HGFF11':'FII - Escritório',
+  'KNRI11':'FII - Híbrido','RBHG11':'FII - Híbrido','RBRP11':'FII - Híbrido',
+  'HGRU11':'FII - Híbrido','RBVA11':'FII - Híbrido','BTAL11':'FII - Híbrido',
+  'RBRF11':'FII - FoF','KFOF11':'FII - FoF','MGFF11':'FII - FoF',
+  'HFOF11':'FII - FoF','BCFF11':'FII - FoF','XPSF11':'FII - FoF',
 };
 
-// Mapa de setores para ações US (Yahoo Finance sector em inglês)
 const US_SECTOR_MAP = {
-  'AAPL':'Tecnologia','MSFT':'Tecnologia','GOOGL':'Tecnologia','AMZN':'Consumo',
-  'NVDA':'Tecnologia','META':'Tecnologia','TSLA':'Consumo','BRK-B':'Financeiro',
-  'JPM':'Financeiro','JNJ':'Saúde','V':'Financeiro','PG':'Consumo','UNH':'Saúde',
-  'HD':'Consumo','MA':'Financeiro','DIS':'Entretenimento','BAC':'Financeiro',
-  'XOM':'Energia','PFE':'Saúde','KO':'Consumo','WMT':'Varejo','CSCO':'Tecnologia',
-  'VZ':'Telecom','INTC':'Tecnologia','NFLX':'Entretenimento','ADBE':'Tecnologia',
-  'CRM':'Tecnologia','AMD':'Tecnologia','PYPL':'Financeiro','QCOM':'Tecnologia',
-  'T':'Telecom','PEP':'Consumo','COST':'Varejo','ABBV':'Saúde','AVGO':'Tecnologia',
-  'ORCL':'Tecnologia','TXN':'Tecnologia','LIN':'Indústria','ACN':'Tecnologia',
-  'NKE':'Consumo','MCD':'Consumo','DHR':'Saúde','ABT':'Saúde','WFC':'Financeiro',
-  'LOW':'Consumo','NEE':'Energia','PM':'Consumo','RTX':'Defesa','HON':'Indústria',
-  'IBM':'Tecnologia','AMAT':'Tecnologia','SBUX':'Consumo','INTU':'Tecnologia',
-  'ISRG':'Saúde','CAT':'Indústria','GE':'Indústria','NOW':'Tecnologia',
-  'BKNG':'Turismo','MDT':'Saúde',
+  // Tecnologia
+  'AAPL':'Tecnologia','MSFT':'Tecnologia','GOOGL':'Tecnologia','GOOG':'Tecnologia',
+  'NVDA':'Tecnologia','META':'Tecnologia','CSCO':'Tecnologia','INTC':'Tecnologia',
+  'ADBE':'Tecnologia','CRM':'Tecnologia','AMD':'Tecnologia','QCOM':'Tecnologia',
+  'AVGO':'Tecnologia','TXN':'Tecnologia','ORCL':'Tecnologia','IBM':'Tecnologia',
+  'INTU':'Tecnologia','NOW':'Tecnologia','AMAT':'Tecnologia','PLTR':'Tecnologia',
+  'SNOW':'Tecnologia','DDOG':'Tecnologia','CRWD':'Tecnologia','NET':'Tecnologia',
+  'OKTA':'Tecnologia','TWLO':'Tecnologia','DOCU':'Tecnologia','ZM':'Tecnologia',
+  'ROKU':'Tecnologia','SHOP':'Tecnologia',
+  // Consumo Discricionário
+  'AMZN':'Consumo','TSLA':'Consumo','HD':'Consumo','MCD':'Consumo','NKE':'Consumo',
+  'SBUX':'Consumo','LOW':'Consumo','BKNG':'Consumo','UBER':'Consumo',
+  'LYFT':'Consumo','SQ':'Consumo',
+  // Consumo Estável
+  'PG':'Consumo Estável','KO':'Consumo Estável','PEP':'Consumo Estável',
+  'WMT':'Consumo Estável','COST':'Consumo Estável','PM':'Consumo Estável',
+  // Financeiro
+  'JPM':'Financeiro','BAC':'Financeiro','WFC':'Financeiro','GS':'Financeiro',
+  'MS':'Financeiro','BLK':'Financeiro','SCHW':'Financeiro','AXP':'Financeiro',
+  'SPGI':'Financeiro','ICE':'Financeiro','V':'Financeiro','MA':'Financeiro',
+  'PYPL':'Financeiro',
+  // Saúde
+  'JNJ':'Saúde','UNH':'Saúde','PFE':'Saúde','DHR':'Saúde','ABT':'Saúde',
+  'MDT':'Saúde','ISRG':'Saúde',
+  // Energia
+  'XOM':'Energia','CVX':'Energia','COP':'Energia','SLB':'Energia',
+  'EOG':'Energia','OXY':'Energia','NEE':'Energia',
+  // Indústria
+  'CAT':'Indústria','GE':'Indústria','HON':'Indústria','LIN':'Indústria',
+  'LMT':'Indústria','DE':'Indústria','UPS':'Indústria','FDX':'Indústria',
+  'RTX':'Indústria','ADP':'Indústria',
+  // Telecom
+  'T':'Telecom','VZ':'Telecom',
+  // Entretenimento
+  'DIS':'Entretenimento','NFLX':'Entretenimento',
   // REITs
-  'O':'REIT - Varejo','SPG':'REIT - Shopping','PLD':'REIT - Industrial',
-  'AMT':'REIT - Torre','CCI':'REIT - Torre','EQIX':'REIT - Data Center',
-  'PSA':'REIT - Self-Storage','DLR':'REIT - Data Center','VICI':'REIT - Cassino',
-  'WPC':'REIT - Diversificado','NNN':'REIT - Varejo','EXR':'REIT - Self-Storage',
+  'O':'REIT - Varejo','ADC':'REIT - Varejo','NNN':'REIT - Varejo',
+  'REG':'REIT - Shopping','KIM':'REIT - Shopping','FRT':'REIT - Shopping',
+  'SPG':'REIT - Shopping',
+  'PLD':'REIT - Industrial','FR':'REIT - Industrial','EGP':'REIT - Industrial',
+  'STAG':'REIT - Industrial','TRNO':'REIT - Industrial',
+  'AMT':'REIT - Torre','CCI':'REIT - Torre','SBAC':'REIT - Torre',
+  'EQIX':'REIT - Data Center','DLR':'REIT - Data Center',
+  'PSA':'REIT - Self-Storage','EXR':'REIT - Self-Storage','CUBE':'REIT - Self-Storage',
   'AVB':'REIT - Residencial','EQR':'REIT - Residencial','MAA':'REIT - Residencial',
-  'UDR':'REIT - Residencial','CPT':'REIT - Residencial','KIM':'REIT - Shopping',
-  'REG':'REIT - Shopping','WELL':'REIT - Saúde','VTR':'REIT - Saúde',
-  'DOC':'REIT - Saúde','HR':'REIT - Saúde','FR':'REIT - Industrial',
-  'EGP':'REIT - Industrial','FRT':'REIT - Varejo','BXP':'REIT - Escritório',
-  'KRG':'REIT - Shopping','STOR':'REIT - Diversificado','SRC':'REIT - Diversificado',
-  'ADC':'REIT - Varejo',
+  'UDR':'REIT - Residencial','CPT':'REIT - Residencial',
+  'WELL':'REIT - Saúde','VTR':'REIT - Saúde','DOC':'REIT - Saúde',
+  'HR':'REIT - Saúde','MPW':'REIT - Saúde',
+  'BXP':'REIT - Escritório','SLG':'REIT - Escritório','VNO':'REIT - Escritório',
+  'WPC':'REIT - Diversificado','SRC':'REIT - Diversificado','STOR':'REIT - Diversificado',
+  'VICI':'REIT - Cassino','ARE':'REIT - Escritório',
+  'HIW':'REIT - Escritório','KRC':'REIT - Escritório',
 };
 
 const STOCKS_BR = [
-  'ITUB4','BBDC4','BBAS3','SANB11','ITSA4','BPAC11','BBSE3','B3SA3','PSSA3','CIEL3',
-  'IRBR3','CARD3','WIZC3','PORT3','CASH3',
-  'PETR4','PETR3','PRIO3','RRRP3','RECV3',
-  'CSAN3','RAIZ4','UGPA3','VBBR3',
-  'ELET3','ELET6','CMIG4','CPFE3','EGIE3','TAEE11','ENBR3','AESB3','EQTL3','TRPL4',
-  'ALUP11','ENGI11','CPLE6','NEOE3','MEGA3',
-  'VALE3','GGBR4','CSNA3','USIM5','GOAU4','CMIN3','BRAP4',
-  'SUZB3','KLBN11','RANI3',
-  'WEGE3','EMBR3','TUPY3','ROMI3','POMO4','KEPL3',
-  'RAIL3','CCRO3','ECOR3','LOGG3','JSLG3','MOVI3','SIMH3','HBSA3',
-  'LREN3','ARZZ3','SOMA3','VIVA3','CEAB3','GUAR3',
-  'MGLU3','VIIA3','AMER3','BHIA3',
-  'PETZ3','GMAT3','CAMB3',
-  'ABEV3','BRFS3','MRFG3','JBSS3','MDIA3','SMTO3','SLCE3',
-  'BEEF3','CRFB3','ASAI3','PCAR3','CAML3',
-  'RDOR3','HAPV3','QUAL3','FLRY3','DASA3','ODPV3','HYPE3','VVEO3','MATD3',
-  'TOTS3','POSI3','LWSA3','SQIA3',
-  'VIVT3','TIMS3','OIBR3',
-  'MRVE3','EZTC3','EVEN3','CYRE3','DIRR3','TEND3','TRIS3',
-  'JHSF3','HBOR3','LAVV3','CURY3','PLPL3',
-  'MULT3','IGTI11','ALSO3','BRML3',
-  'SBSP3','SAPR11','CSMG3',
-  'GRND3','NTCO3','ALPA4','MYPK3','FRAS3','RAPT4',
+  'ABEV3','ALPA4','ALSO3','AMAR3','AMBP3','AMER3','ANIM3','ARZZ3','ASAI3',
+  'AZUL4','B3SA3','BAHI3','BBAS3','BBDC3','BBDC4','BBSE3','BEEF3','BHIA3',
+  'BMGB4','BPAC11','BRAP4','BRFS3','BRKM5','BRML3','CAML3','CASH3','CBAV3',
+  'CCRO3','CEAB3','CIEL3','CMIG3','CMIG4','CMIN3','COGN3','CPFE3','CPLE3',
+  'CPLE6','CRFB3','CSAN3','CSMG3','CSNA3','CVCB3','CYRE3','DASA3','DIRR3',
+  'DXCO3','ECOR3','EGIE3','ELET3','ELET6','EMBR3','ENBR3','ENGI11','EQTL3',
+  'EZTC3','FLRY3','FRAS3','GGBR3','GGBR4','GMAT3','GOAU4','GRND3','GUAR3',
+  'HAPV3','HBOR3','HBSA3','HYPE3','IGTI11','INTB3','IRBR3','ITSA4','ITUB3',
+  'ITUB4','JBSS3','JHSF3','JSLG3','KEPL3','KLBN11','LAVV3','LREN3','LWSA3',
+  'MDIA3','MEGA3','MGLU3','MOVI3','MRFG3','MRVE3','MULT3','MYPK3','NEOE3',
+  'NTCO3','ODPV3','OIBR3','PARD3','PCAR3','PETR3','PETR4','PETZ3','PLPL3',
+  'POMO4','POSI3','PRIO3','PSSA3','QUAL3','RAIL3','RAIZ4','RANI3','RDOR3',
+  'RECV3','RENT3','RRRP3','RAPT4','SANB11','SAPR11','SBSP3','SIMH3','SLCE3',
+  'SMTO3','SOMA3','SUZB3','TAEE11','TEND3','TIMS3','TOTS3','TRIS3','TRPL4',
+  'TUPY3','UGPA3','USIM5','VALE3','VBBR3','VIVA3','VIVT3','VVEO3','WEGE3',
+  'YDUQ3',
 ];
 
 const FIIS = [
-  'MXRF11','CPTS11','KNCR11','KNIP11','HGLG11','BTLG11','XPLG11','VILG11',
-  'XPML11','VISC11','HSML11','HGBS11','KNRI11','HGRE11','BRCR11','RBHG11',
-  'RBRF11','KFOF11','MGFF11','HFOF11','IRDM11','VGIP11','RECR11','RBRP11',
-  'LVBI11','GGRC11','BTCR11','PATL11','TRXF11','BLMG11','HSLG11',
-  'MCCI11','KNHY11','DEVA11','PLCR11','CVBI11','KNSC11','VGIR11',
-  'MALL11','PVBI11','JSRE11','BCRI11','HGPO11','RNGO11',
-  'BCFF11','XPSF11',
+  'AFHI11','ALZR11','ARRI11','BARI11','BCFF11','BCRI11','BLMG11','BTAL11',
+  'BTCR11','BTLG11','CARE11','CPTS11','CVBI11','DEVA11','FEXC11','GGRC11',
+  'HABT11','HCTR11','HFOF11','HGCR11','HGFF11','HGLG11','HGPO11','HGRE11',
+  'HGRU11','HSML11','HSLG11','IRDM11','JSRE11','KFOF11','KNCR11','KNHY11',
+  'KNIP11','KNRI11','KNSC11','LVBI11','MALL11','MCCI11','MGFF11','MXRF11',
+  'PATL11','PLCR11','PVBI11','RBRF11','RBRP11','RBVA11','RECR11','RNGO11',
+  'SNFF11','TGAR11','TRXF11','URPR11','VGIP11','VGIR11','VILG11','VISC11',
+  'XPIN11','XPLG11','XPML11','XPSF11',
 ];
 
 const STOCKS_US = [
-  'AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','BRK-B','JPM','JNJ',
-  'V','PG','UNH','HD','MA','DIS','BAC','XOM','PFE','KO',
-  'WMT','CSCO','VZ','INTC','NFLX','ADBE','CRM','AMD','PYPL','QCOM',
-  'T','PEP','COST','ABBV','AVGO','ORCL','TXN','LIN','ACN','NKE',
-  'MCD','DHR','ABT','WFC','LOW','NEE','PM','RTX','HON','IBM',
-  'AMAT','SBUX','INTU','ISRG','CAT','GE','NOW','BKNG','MDT',
+  'AAPL','MSFT','GOOGL','GOOG','AMZN','NVDA','META','TSLA','BRK-B','JPM',
+  'JNJ','V','PG','UNH','HD','MA','DIS','BAC','XOM','PFE',
+  'KO','PEP','WMT','COST','CSCO','INTC','NFLX','ADBE','CRM','AMD',
+  'PYPL','QCOM','T','VZ','AVGO','TXN','ORCL','IBM','INTU','NOW',
+  'SBUX','NKE','MCD','CAT','GE','HON','LIN','AMAT','ISRG','BKNG',
+  'DHR','ABT','MDT','LOW','NEE','PM','RTX','WFC','GS','MS',
+  'BLK','SCHW','AXP','SPGI','ICE','ADP','LMT','DE','UPS','FDX',
+  'CVX','COP','SLB','EOG','OXY','PLTR','SNOW','UBER','LYFT','SQ',
+  'SHOP','ROKU','TWLO','DOCU','ZM','DDOG','CRWD','NET','OKTA',
 ];
 
 const REITS = [
-  'O','SPG','PLD','AMT','CCI','EQIX','PSA','DLR','VICI','WPC',
-  'NNN','EXR','AVB','EQR','MAA','UDR','CPT','KIM','REG',
-  'WELL','VTR','DOC','HR',
-  'FR','EGP',
-  'FRT','BXP','KRG',
-  'ADC',
+  'O','ADC','NNN','SPG','REG','KIM','FRT',
+  'PLD','FR','EGP','STAG','TRNO',
+  'AMT','CCI','SBAC',
+  'EQIX','DLR',
+  'PSA','EXR','CUBE',
+  'AVB','EQR','MAA','UDR','CPT',
+  'WELL','VTR','DOC','HR','MPW',
+  'BXP','SLG','VNO',
+  'WPC','SRC','STOR','VICI',
+  'ARE','HIW','KRC',
 ];
 
 async function getUserSettings(userId) {
@@ -287,40 +356,47 @@ class ScreenerController {
   }
 
   // ── Buscar lista de ativos via Yahoo Finance (BR ou US) ───────────────────
-  // Sequencial com delay — Yahoo Finance rejeita requisições paralelas com mesmo crumb
+  // Cache em memória 8 min + concorrência máxima de 4 requisições simultâneas.
   async fetchStocksYahoo(list, filters, isUS = false) {
     const unique = [...new Set(list)];
     const results = [];
 
-    for (const ticker of unique) {
-      try {
-        const yData = isUS ? await yahooGetUS(ticker) : await yahooGetBR(ticker);
-        const priceModule = yData.price || {};
-        const fundamentals = this.extractYahooFundamentals(yData);
-        const score = this.calculateScore(fundamentals, filters) ?? 50;
-        // passFilters = score >= 80: o score combinado É o critério de compra.
-        const passFilters = score >= 80;
-        const violations = this.getFilterViolations(fundamentals, filters);
-        // Setor do mapa estático — mais confiável que summaryProfile do Yahoo
-        const sector = isUS ? (US_SECTOR_MAP[ticker] || null) : (SECTOR_MAP[ticker] || null);
-        results.push({
-          ticker,
-          name: priceModule.longName || priceModule.shortName || ticker,
-          price: priceModule.regularMarketPrice ?? null,
-          change: priceModule.regularMarketChangePercent ?? null,
-          market: isUS ? 'US' : 'BR',
-          sector,
-          ...fundamentals,
-          score,
-          passFilters,
-          violations,
-          recommendation: score >= 80 ? 'COMPRAR' : score >= 60 ? 'MANTER' : 'AVALIAR'
-        });
-        console.log(`[Search] ${ticker} — score: ${score}, passFilters: ${passFilters}`);
-      } catch (e) {
-        console.error(`[Search] Erro ${ticker}:`, e.message);
+    const fetchOne = async (ticker) => {
+      // Verificar cache primeiro
+      const cached = getCached(ticker);
+      const yData = cached || (isUS ? await yahooGetUS(ticker) : await yahooGetBR(ticker));
+      if (!cached) setCache(ticker, yData);
+
+      const priceModule = yData.price || {};
+      const fundamentals = this.extractYahooFundamentals(yData);
+      const score = this.calculateScore(fundamentals, {}) ?? 50;
+      const passFilters = score >= 80;
+      const violations = this.getFilterViolations(fundamentals, filters);
+      const sector = isUS ? (US_SECTOR_MAP[ticker] || null) : (SECTOR_MAP[ticker] || null);
+      return {
+        ticker,
+        name: priceModule.longName || priceModule.shortName || ticker,
+        price: priceModule.regularMarketPrice ?? null,
+        change: priceModule.regularMarketChangePercent ?? null,
+        market: isUS ? 'US' : 'BR',
+        sector,
+        ...fundamentals,
+        score,
+        passFilters,
+        violations,
+        recommendation: score >= 80 ? 'COMPRAR' : score >= 60 ? 'MANTER' : 'AVALIAR',
+      };
+    };
+
+    const settled = await fetchWithConcurrency(unique, fetchOne);
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i];
+      if (r.status === 'fulfilled') {
+        results.push(r.value);
+        console.log(`[Search] ${r.value.ticker} — score: ${r.value.score}`);
+      } else {
+        console.error(`[Search] Erro ${unique[i]}:`, r.reason?.message || r.reason);
       }
-      await new Promise(r => setTimeout(r, 350));
     }
     return results;
   }
@@ -367,7 +443,9 @@ class ScreenerController {
       for (const asset of brAssets) {
         try {
           console.log(`[Screener] Buscando ${asset.ticker} via Yahoo Finance`);
-          const yData = await yahooGetBR(asset.ticker);
+          const cached = getCached(asset.ticker + '.SA');
+          const yData = cached || await yahooGetBR(asset.ticker);
+          if (!cached) setCache(asset.ticker + '.SA', yData);
           const priceModule = yData.price || {};
           const currentPrice = priceModule.regularMarketPrice ?? parseFloat(asset.current_price) ?? parseFloat(asset.average_price);
           const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;
@@ -419,7 +497,9 @@ class ScreenerController {
       for (const asset of usAssets) {
         try {
           console.log(`[Screener] Buscando ${asset.ticker} (US) via Yahoo Finance`);
-          const yData = await yahooGetUS(asset.ticker);
+          const cachedUS = getCached(asset.ticker);
+          const yData = cachedUS || await yahooGetUS(asset.ticker);
+          if (!cachedUS) setCache(asset.ticker, yData);
           const priceModule = yData.price || {};
           const currentPrice = priceModule.regularMarketPrice ?? parseFloat(asset.current_price) ?? parseFloat(asset.average_price);
           const name = priceModule.longName || priceModule.shortName || asset.name || asset.ticker;

@@ -56,13 +56,13 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
       {/* Mobile Header */}
-      <header className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur border-b border-slate-800">
+      <header className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-slate-900 border-b border-slate-800 shadow-lg">
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
               <BarChart3 className="w-4 h-4 text-white" />
             </div>
-            <span className="font-semibold text-emerald-400 text-sm">Juin Invest</span>
+            <span className="font-semibold text-emerald-400 text-sm">Investment Advisor</span>
           </div>
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -74,7 +74,7 @@ export default function Layout() {
 
         {/* Mobile Menu Dropdown */}
         {mobileMenuOpen && (
-          <div className="absolute top-full left-0 right-0 bg-slate-900/98 backdrop-blur border-b border-slate-800 max-h-[70vh] overflow-y-auto">
+          <div className="absolute top-full left-0 right-0 bg-slate-900 border-b border-slate-700 shadow-2xl max-h-[80vh] overflow-y-auto" style={{ zIndex: 60 }}>
             <nav className="px-3 py-3 space-y-1">
               {navItems.map((item) => (
                 <NavLink
@@ -211,7 +211,7 @@ export default function Layout() {
       {/* Overlay for mobile menu */}
       {mobileMenuOpen && (
         <div 
-          className="lg:hidden fixed inset-0 bg-black/50 z-40"
+          className="lg:hidden fixed inset-0 bg-black/70 z-40"
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
