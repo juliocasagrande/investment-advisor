@@ -112,4 +112,8 @@ export const screenerService = {
   listFilters: () => api.get('/screener/filters'),
 };
 
+export const currencyService = {
+  getUsdRate: () => api.get('/currency/usd-brl'),
+};
+
 export default api;

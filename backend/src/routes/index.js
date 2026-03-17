@@ -13,6 +13,7 @@ const screenerController = require('../controllers/screener.controller');
 const settingsController = require('../controllers/settings.controller');
 
 const chatController = require('../controllers/chat.controller');
+const currencyController = require('../controllers/currency.controller');
 
 // ==================== AUTH ====================
 router.post('/auth/register', (req, res) => authController.register(req, res));
@@ -85,6 +86,9 @@ router.get('/screener/filters', auth, (req, res) => screenerController.listFilte
 
 // ==================== CHAT ====================
 router.post('/chat', auth, (req, res) => chatController.sendMessage(req, res));
+
+// ==================== CURRENCY ====================
+router.get('/currency/usd-brl', auth, (req, res) => currencyController.getUsdRate(req, res));
 
 // ==================== SETTINGS ====================
 router.get('/settings', auth, (req, res) => settingsController.getSettings(req, res));

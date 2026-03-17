@@ -1,5 +1,10 @@
 const pool = require('../config/database');
 const quotesService = require('../services/quotes.service');
+const currencyService = require('../services/currency.service');
+
+// Categorias que negociam em dólar por padrão
+const USD_CATEGORIES = new Set(['stocks_us', 'reits']);
+
 
 class AssetsController {
 
@@ -147,6 +152,11 @@ class AssetsController {
   // Listar todos os ativos
   async listAssets(req, res) {
     try {
+      // Auto-healing: garante coluna currency na tabela assets
+      await pool.query(`
+        ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'
+      `).catch(() => {});
+
       const { classId } = req.query;
 
       let query = `
@@ -174,7 +184,31 @@ class AssetsController {
 
       const result = await pool.query(query, params);
 
-      return res.json({ assets: result.rows });
+      // Busca cotação do dólar uma vez para enriquecer ativos USD
+      let usdRate = null;
+      const hasUsdAssets = result.rows.some(a => a.currency === 'USD');
+      if (hasUsdAssets) {
+        usdRate = await currencyService.getUsdToBrl().catch(() => null);
+      }
+
+      const assets = result.rows.map(asset => {
+        if (asset.currency === 'USD' && usdRate) {
+          const avgPriceBrl = parseFloat(asset.average_price) * usdRate;
+          const currentPriceBrl = (parseFloat(asset.current_price) || parseFloat(asset.average_price)) * usdRate;
+          const qty = parseFloat(asset.quantity) || 0;
+          return {
+            ...asset,
+            usd_rate: usdRate,
+            average_price_brl: avgPriceBrl,
+            current_price_brl: currentPriceBrl,
+            current_value_brl: qty * currentPriceBrl,
+            invested_value_brl: qty * avgPriceBrl,
+          };
+        }
+        return asset;
+      });
+
+      return res.json({ assets, usdRate });
 
     } catch (error) {
       console.error('Erro ao listar ativos:', error);
@@ -226,6 +260,7 @@ class AssetsController {
         name, 
         type, 
         market = 'BR',
+        currency,           // 'BRL' | 'USD' — enviado pelo frontend
         quantity = 0, 
         averagePrice = 0,
         currentPrice,
@@ -241,8 +276,13 @@ class AssetsController {
         presentValue
       } = req.body;
 
+      // Auto-healing: garante coluna currency
+      await pool.query(`
+        ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'
+      `).catch(() => {});
+
       const classCheck = await pool.query(
-        'SELECT id FROM asset_classes WHERE id = $1 AND user_id = $2',
+        'SELECT id, category FROM asset_classes WHERE id = $1 AND user_id = $2',
         [assetClassId, req.userId]
       );
 
@@ -250,7 +290,13 @@ class AssetsController {
         return res.status(400).json({ error: 'Classe de ativo inválida' });
       }
 
+      // Determinar moeda: usa o enviado pelo frontend; se não enviado, infere pela categoria
+      const classCategory = classCheck.rows[0].category || '';
+      const resolvedCurrency = currency || (USD_CATEGORIES.has(classCategory) ? 'USD' : 'BRL');
+
       let finalCurrentPrice = currentPrice || averagePrice;
+
+      // Busca cotação apenas para ativos sem preço definido
       if (!currentPrice && market !== 'CRYPTO' && ticker) {
         try {
           const settings = await pool.query(
@@ -276,15 +322,15 @@ class AssetsController {
 
       const result = await pool.query(`
         INSERT INTO assets (
-          user_id, asset_class_id, ticker, name, type, market, 
+          user_id, asset_class_id, ticker, name, type, market, currency,
           quantity, average_price, current_price, notes,
           fixed_income_type, indexer, rate, maturity_date, issuer,
           sector, wallet_address, network, present_value
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         RETURNING *
       `, [
-        req.userId, assetClassId, ticker ? ticker.toUpperCase() : null, name, type, market,
+        req.userId, assetClassId, ticker ? ticker.toUpperCase() : null, name, type, market, resolvedCurrency,
         quantity, averagePrice, finalCurrentPrice, notes,
         fixedIncomeType, indexer, rate, maturityDate || null, issuer,
         sector, walletAddress, network, presentValue
@@ -297,7 +343,13 @@ class AssetsController {
         `, [req.userId, result.rows[0].id, quantity, averagePrice, quantity * averagePrice]);
       }
 
-      return res.status(201).json({ asset: result.rows[0] });
+      // Se for ativo em USD, enriquece resposta com taxa atual
+      let usdRate = null;
+      if (resolvedCurrency === 'USD') {
+        usdRate = await currencyService.getUsdToBrl().catch(() => null);
+      }
+
+      return res.status(201).json({ asset: result.rows[0], usdRate });
 
     } catch (error) {
       if (error.code === '23505') {

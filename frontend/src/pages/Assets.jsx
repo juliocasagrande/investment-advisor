@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { assetsService, classesService, transactionsService } from '../services/api';
+import { assetsService, classesService, transactionsService, currencyService } from '../services/api';
 import { 
   Plus, Search, Edit2, Trash2, TrendingUp, TrendingDown, X, 
   ShoppingCart, DollarSign, Briefcase, PieChart, ChevronDown,
@@ -34,12 +34,13 @@ const FIELD_CONFIG = {
   },
   stocks_us: {
     label: 'Ações EUA', icon: '🇺🇸',
+    defaultCurrency: 'USD',
     fields: [
       { name: 'ticker', label: 'Ticker', type: 'text', required: true, placeholder: 'AAPL', uppercase: true },
       { name: 'name', label: 'Nome', type: 'text', placeholder: 'Apple Inc' },
       { name: 'sector', label: 'Setor', type: 'text', placeholder: 'Technology' },
       { name: 'quantity', label: 'Quantidade', type: 'number', step: '0.000001', required: true },
-      { name: 'averagePrice', label: 'Preço Médio ($)', type: 'number', step: '0.01', required: true }
+      { name: 'averagePrice', label: 'Preço Médio (US$)', type: 'number', step: '0.01', required: true, isCurrencyField: true }
     ],
     market: 'US'
   },
@@ -56,12 +57,13 @@ const FIELD_CONFIG = {
   },
   reits: {
     label: 'REITs', icon: '🏠',
+    defaultCurrency: 'USD',
     fields: [
       { name: 'ticker', label: 'Ticker', type: 'text', required: true, placeholder: 'O', uppercase: true },
       { name: 'name', label: 'Nome', type: 'text', placeholder: 'Realty Income' },
       { name: 'sector', label: 'Segmento', type: 'text', placeholder: 'Triple Net Lease' },
       { name: 'quantity', label: 'Shares', type: 'number', step: '0.000001', required: true },
-      { name: 'averagePrice', label: 'Preço Médio ($)', type: 'number', step: '0.01', required: true }
+      { name: 'averagePrice', label: 'Preço Médio (US$)', type: 'number', step: '0.01', required: true, isCurrencyField: true }
     ],
     market: 'US'
   },
@@ -210,7 +212,7 @@ function StyledSelect({ value, onChange, options, placeholder = 'Selecione...', 
   );
 }
 
-function groupAssets(assets, classes) {
+function groupAssets(assets, classes, usdRate) {
   const groups = {};
   for (const asset of assets) {
     const cls = classes.find(c => c.id === asset.asset_class_id);
@@ -219,8 +221,10 @@ function groupAssets(assets, classes) {
     if (!groups[groupName]) groups[groupName] = { name: groupName, color, assets: [], totalValue: 0 };
     const qty = parseFloat(asset.quantity) || 0;
     const price = parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0;
+    // Converte para BRL se necessário
+    const priceBrl = (asset.currency === 'USD' && usdRate) ? price * usdRate : price;
     groups[groupName].assets.push(asset);
-    groups[groupName].totalValue += qty * price;
+    groups[groupName].totalValue += qty * priceBrl;
   }
   return Object.values(groups).sort((a, b) => b.totalValue - a.totalValue);
 }
@@ -239,6 +243,8 @@ export default function Assets() {
   const [formData, setFormData] = useState({});
   const [collapsedGroups, setCollapsedGroups] = useState({});
   const [classSelectOpen, setClassSelectOpen] = useState(false);
+  const [usdRate, setUsdRate] = useState(null);
+  const [usdRateLoading, setUsdRateLoading] = useState(false);
   const [transactionData, setTransactionData] = useState({
     type: 'BUY', quantity: '', price: '',
     date: new Date().toISOString().split('T')[0]
@@ -250,16 +256,41 @@ export default function Assets() {
     try {
       setLoading(true);
       const [assetsRes, classesRes] = await Promise.all([assetsService.list(), classesService.list()]);
-      setAssets(assetsRes.data?.assets || []);
+      const fetchedAssets = assetsRes.data?.assets || [];
+      setAssets(fetchedAssets);
       setClasses(classesRes.data?.classes || []);
+      // Se o backend já devolveu o rate junto, usa ele
+      if (assetsRes.data?.usdRate) {
+        setUsdRate(assetsRes.data.usdRate);
+      } else if (fetchedAssets.some(a => a.currency === 'USD')) {
+        fetchUsdRate();
+      }
     } catch { toast.error('Erro ao carregar dados'); }
     finally { setLoading(false); }
   };
 
+  const fetchUsdRate = async () => {
+    try {
+      setUsdRateLoading(true);
+      const res = await currencyService.getUsdRate();
+      setUsdRate(res.data?.rate || null);
+    } catch { /* silencioso */ }
+    finally { setUsdRateLoading(false); }
+  };
+
+  // Moeda detectada pela categoria selecionada no formulário
+  const isUsdCategory = !!(FIELD_CONFIG[selectedCategory]?.defaultCurrency === 'USD');
+  // Moeda efetiva no formulário (pode ser sobrescrita pelo usuário)
+  const formCurrency = formData.currency || (isUsdCategory ? 'USD' : 'BRL');
+
   const handleClassSelect = (classId) => {
     const cls = classes.find(c => c.id === parseInt(classId));
-    setSelectedCategory(getCategoryFromClass(cls));
-    setFormData({ ...formData, assetClassId: classId });
+    const category = getCategoryFromClass(cls);
+    const defaultCurrency = FIELD_CONFIG[category]?.defaultCurrency || 'BRL';
+    setSelectedCategory(category);
+    setFormData({ ...formData, assetClassId: classId, currency: defaultCurrency });
+    // Busca cotação do dólar ao selecionar categoria USD
+    if (defaultCurrency === 'USD' && !usdRate) fetchUsdRate();
   };
 
   const currentConfig = FIELD_CONFIG[selectedCategory] || FIELD_CONFIG.default;
@@ -273,6 +304,7 @@ export default function Assets() {
         name: formData.name || formData.ticker,
         type: formData.type || formData.fixedIncomeType || 'Ação',
         market: currentConfig.market || 'BR',
+        currency: formCurrency,
         quantity: parseFloat(formData.quantity) || 1,
         averagePrice: parseFloat(formData.averagePrice) || 0,
         notes: formData.notes || ''
@@ -281,7 +313,8 @@ export default function Assets() {
         await assetsService.update(editingAsset.id, payload);
         toast.success('Ativo atualizado!');
       } else {
-        await assetsService.create(payload);
+        const res = await assetsService.create(payload);
+        if (res.data?.usdRate) setUsdRate(res.data.usdRate);
         toast.success('Ativo cadastrado!');
       }
       setShowModal(false); resetForm(); loadData();
@@ -313,7 +346,11 @@ export default function Assets() {
     const cls = classes.find(c => c.id === asset.asset_class_id);
     setSelectedCategory(getCategoryFromClass(cls));
     setEditingAsset(asset);
-    setFormData({ assetClassId: asset.asset_class_id, ticker: asset.ticker, name: asset.name, type: asset.type, quantity: asset.quantity, averagePrice: asset.average_price, notes: asset.notes });
+    setFormData({
+      assetClassId: asset.asset_class_id, ticker: asset.ticker, name: asset.name,
+      type: asset.type, quantity: asset.quantity, averagePrice: asset.average_price,
+      notes: asset.notes, currency: asset.currency || 'BRL'
+    });
     setShowModal(true);
   };
 
@@ -327,25 +364,51 @@ export default function Assets() {
   const toggleGroup = (name) => setCollapsedGroups(prev => ({ ...prev, [name]: !prev[name] }));
 
   const fmt = (v) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
+  const fmtUsd = (v) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v || 0);
+
+  // Helper: retorna valor em BRL de um asset (converte USD se necessário)
+  const getAssetValueBrl = (asset) => {
+    const qty = parseFloat(asset.quantity) || 0;
+    if (asset.currency === 'USD' && usdRate) {
+      const price = parseFloat(asset.current_price_brl) ||
+        (parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0) * usdRate;
+      return qty * (price / qty || 0);
+    }
+    return qty * (parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0);
+  };
+
+  const getAssetInvestedBrl = (asset) => {
+    const qty = parseFloat(asset.quantity) || 0;
+    const avgPrice = parseFloat(asset.average_price) || 0;
+    if (asset.currency === 'USD' && usdRate) return qty * avgPrice * usdRate;
+    return qty * avgPrice;
+  };
 
   const filteredAssets = assets.filter(a => {
     const qty = parseFloat(a.quantity) || 0;
-    if (qty <= 0) return false; // ocultar posições zeradas
+    if (qty <= 0) return false;
     const matchSearch = !search || (a.ticker||'').toLowerCase().includes(search.toLowerCase()) || (a.name||'').toLowerCase().includes(search.toLowerCase());
     const matchClass = !filterClass || a.asset_class_id === parseInt(filterClass);
     return matchSearch && matchClass;
   });
 
-  const totalValue    = filteredAssets.reduce((s, a) => s + (parseFloat(a.quantity)||0)*(parseFloat(a.current_price)||parseFloat(a.average_price)||0), 0);
-  const totalInvested = filteredAssets.reduce((s, a) => s + (parseFloat(a.quantity)||0)*(parseFloat(a.average_price)||0), 0);
+  const totalValue    = filteredAssets.reduce((s, a) => s + getAssetValueBrl(a), 0);
+  const totalInvested = filteredAssets.reduce((s, a) => s + getAssetInvestedBrl(a), 0);
   const totalGain = totalValue - totalInvested;
-  const groups = groupAssets(filteredAssets, classes);
+
+  // Recalcula grupos usando valores em BRL para ordenação correta
+  const groups = groupAssets(filteredAssets, classes, usdRate);
 
   const classOptions = [
     { value: '', label: 'Todas as classes' },
     ...classes.map(c => ({ value: c.id, label: cleanClassName(c.name) }))
   ];
   const classModalOptions = classes.map(c => ({ value: c.id, label: cleanClassName(c.name) }));
+
+  // Preview de conversão no formulário
+  const previewBrl = formCurrency === 'USD' && usdRate && formData.averagePrice
+    ? parseFloat(formData.averagePrice) * usdRate
+    : null;
 
   const renderField = (field) => {
     const value = formData[field.name] || '';
@@ -364,6 +427,12 @@ export default function Assets() {
         <input type={field.type} step={field.step} value={value}
           onChange={(e) => setFormData({ ...formData, [field.name]: field.uppercase ? e.target.value.toUpperCase() : e.target.value })}
           className="input" placeholder={field.placeholder} required={field.required} />
+        {/* Preview de conversão ao lado do campo de preço em USD */}
+        {field.isCurrencyField && formCurrency === 'USD' && value && usdRate && (
+          <p className="text-xs text-blue-400 mt-1 flex items-center gap-1">
+            ≈ {fmt(parseFloat(value) * usdRate)} <span className="text-slate-500">(USD × {usdRate.toFixed(4)})</span>
+          </p>
+        )}
       </div>
     );
   };
@@ -382,9 +451,18 @@ export default function Assets() {
           <h1 className="text-2xl font-bold text-white">Meus Ativos</h1>
           <p className="text-slate-500 text-sm mt-1">{assets.length} ativos cadastrados</p>
         </div>
-        <button onClick={() => { resetForm(); setShowModal(true); }} className="btn btn-primary flex items-center gap-2">
-          <Plus className="w-4 h-4" /> Novo Ativo
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Badge cotação do dólar */}
+          {usdRate && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+              <span className="text-xs text-blue-400 font-mono">US$ 1 = {fmt(usdRate)}</span>
+              {usdRateLoading && <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin" />}
+            </div>
+          )}
+          <button onClick={() => { resetForm(); setShowModal(true); }} className="btn btn-primary flex items-center gap-2">
+            <Plus className="w-4 h-4" /> Novo Ativo
+          </button>
+        </div>
       </div>
 
       {/* Summary */}
@@ -392,10 +470,12 @@ export default function Assets() {
         <div className="stat-card bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border-emerald-500/20">
           <div className="flex items-center gap-2 mb-2"><DollarSign className="w-5 h-5 text-emerald-400" /><span className="text-xs text-emerald-400">Valor Atual</span></div>
           <p className="text-2xl font-bold text-white">{fmt(totalValue)}</p>
+          <p className="text-xs text-slate-500 mt-1">em BRL</p>
         </div>
         <div className="stat-card bg-gradient-to-br from-blue-500/20 to-cyan-500/10 border-blue-500/20">
           <div className="flex items-center gap-2 mb-2"><Briefcase className="w-5 h-5 text-blue-400" /><span className="text-xs text-blue-400">Total Investido</span></div>
           <p className="text-2xl font-bold text-white">{fmt(totalInvested)}</p>
+          <p className="text-xs text-slate-500 mt-1">em BRL</p>
         </div>
         <div className={`stat-card ${totalGain >= 0 ? 'bg-gradient-to-br from-green-500/20 to-emerald-500/10 border-green-500/20' : 'bg-gradient-to-br from-red-500/20 to-rose-500/10 border-red-500/20'}`}>
           <div className="flex items-center gap-2 mb-2">
@@ -426,8 +506,9 @@ export default function Assets() {
         {groups.length === 0 && <div className="card py-12 text-center text-slate-500">Nenhum ativo encontrado</div>}
         {groups.map(group => {
           const collapsed = collapsedGroups[group.name];
-          const groupInvested = group.assets.reduce((s, a) => s + (parseFloat(a.quantity)||0)*(parseFloat(a.average_price)||0), 0);
-          const groupGain = group.totalValue - groupInvested;
+          const groupInvested = group.assets.reduce((s, a) => s + getAssetInvestedBrl(a), 0);
+          const groupValue = group.assets.reduce((s, a) => s + getAssetValueBrl(a), 0);
+          const groupGain = groupValue - groupInvested;
           const groupGainPct = groupInvested > 0 ? (groupGain / groupInvested) * 100 : 0;
 
           return (
@@ -440,7 +521,7 @@ export default function Assets() {
                 </div>
                 <div className="flex items-center gap-6">
                   <div className="text-right hidden sm:block">
-                    <p className="text-sm font-mono font-semibold text-white">{fmt(group.totalValue)}</p>
+                    <p className="text-sm font-mono font-semibold text-white">{fmt(groupValue)}</p>
                     <p className={`text-xs font-mono ${groupGain >= 0 ? 'text-green-400' : 'text-red-400'}`}>{groupGain >= 0 ? '+' : ''}{groupGainPct.toFixed(1)}%</p>
                   </div>
                   {collapsed ? <ChevronRight className="w-4 h-4 text-slate-500" /> : <ChevronUp className="w-4 h-4 text-slate-500" />}
@@ -456,34 +537,55 @@ export default function Assets() {
                         <th className="py-2.5 px-4 text-right">Qtd</th>
                         <th className="py-2.5 px-4 text-right">PM</th>
                         <th className="py-2.5 px-4 text-right">Cotação</th>
-                        <th className="py-2.5 px-4 text-right">Valor</th>
+                        <th className="py-2.5 px-4 text-right">Valor (BRL)</th>
                         <th className="py-2.5 px-4 text-right">Ganho</th>
                         <th className="py-2.5 px-4"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-700/30">
-                      {group.assets.slice().sort((a, b) => {
-                        const va = (parseFloat(a.quantity)||0)*(parseFloat(a.current_price)||parseFloat(a.average_price)||0);
-                        const vb = (parseFloat(b.quantity)||0)*(parseFloat(b.current_price)||parseFloat(b.average_price)||0);
-                        return vb - va;
-                      }).map(asset => {
+                      {group.assets.slice().sort((a, b) => getAssetValueBrl(b) - getAssetValueBrl(a)).map(asset => {
+                        const isUsd = asset.currency === 'USD';
                         const qty = parseFloat(asset.quantity) || 0;
-                        const avgPrice = parseFloat(asset.average_price) || 0;
-                        const currentPrice = parseFloat(asset.current_price) || avgPrice;
-                        const currentValue = qty * currentPrice;
-                        const investedValue = qty * avgPrice;
-                        const gain = currentValue - investedValue;
-                        const gainPercent = investedValue > 0 ? (gain / investedValue) * 100 : 0;
+                        const avgPriceOrig = parseFloat(asset.average_price) || 0;
+                        const currentPriceOrig = parseFloat(asset.current_price) || avgPriceOrig;
+
+                        // Valores em BRL
+                        const avgPriceBrl = isUsd && usdRate ? avgPriceOrig * usdRate : avgPriceOrig;
+                        const currentPriceBrl = isUsd && usdRate ? currentPriceOrig * usdRate : currentPriceOrig;
+                        const currentValueBrl = qty * currentPriceBrl;
+                        const investedValueBrl = qty * avgPriceBrl;
+                        const gain = currentValueBrl - investedValueBrl;
+                        const gainPercent = investedValueBrl > 0 ? (gain / investedValueBrl) * 100 : 0;
+
                         return (
                           <tr key={asset.id} className="hover:bg-slate-800/20 transition-colors">
                             <td className="py-3 px-5">
-                              <p className="font-mono font-bold text-emerald-400">{asset.ticker || asset.name}</p>
+                              <div className="flex items-center gap-2">
+                                <p className="font-mono font-bold text-emerald-400">{asset.ticker || asset.name}</p>
+                                {isUsd && (
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">USD</span>
+                                )}
+                              </div>
                               <p className="text-xs text-slate-500 truncate max-w-[160px]">{asset.name || asset.type}</p>
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-sm text-slate-300">{qty.toLocaleString('pt-BR')}</td>
-                            <td className="py-3 px-4 text-right font-mono text-sm text-slate-400">{fmt(avgPrice)}</td>
-                            <td className="py-3 px-4 text-right font-mono text-sm text-white">{fmt(currentPrice)}</td>
-                            <td className="py-3 px-4 text-right font-mono text-sm font-medium text-white">{fmt(currentValue)}</td>
+                            <td className="py-3 px-4 text-right font-mono text-sm text-slate-400">
+                              {isUsd ? (
+                                <div>
+                                  <p>{fmtUsd(avgPriceOrig)}</p>
+                                  {usdRate && <p className="text-xs text-slate-600">{fmt(avgPriceBrl)}</p>}
+                                </div>
+                              ) : fmt(avgPriceOrig)}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-sm text-white">
+                              {isUsd ? (
+                                <div>
+                                  <p>{fmtUsd(currentPriceOrig)}</p>
+                                  {usdRate && <p className="text-xs text-slate-500">{fmt(currentPriceBrl)}</p>}
+                                </div>
+                              ) : fmt(currentPriceOrig)}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-sm font-medium text-white">{fmt(currentValueBrl)}</td>
                             <td className="py-3 px-4 text-right">
                               <span className={`inline-flex items-center gap-1 text-sm font-mono ${gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                 {gain >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
@@ -522,9 +624,64 @@ export default function Assets() {
                 <label className="block text-sm text-slate-400 mb-2">Classe *</label>
                 <StyledSelect value={formData.assetClassId || ''} onChange={(v) => handleClassSelect(v)} options={classModalOptions} placeholder="Selecione a classe..." disabled={!!editingAsset} onOpenChange={setClassSelectOpen} />
               </div>
+
               {selectedCategory && (
                 <>
+                  {/* Seletor de moeda — visível para todas as categorias */}
+                  <div>
+                    <label className="block text-sm text-slate-400 mb-2">Moeda da operação</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button type="button"
+                        onClick={() => setFormData({ ...formData, currency: 'BRL' })}
+                        className={`py-2.5 rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2 ${formCurrency === 'BRL' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
+                        🇧🇷 Real (BRL)
+                      </button>
+                      <button type="button"
+                        onClick={() => { setFormData({ ...formData, currency: 'USD' }); if (!usdRate) fetchUsdRate(); }}
+                        className={`py-2.5 rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2 ${formCurrency === 'USD' ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
+                        🇺🇸 Dólar (USD)
+                      </button>
+                    </div>
+                    {/* Taxa do dólar no formulário */}
+                    {formCurrency === 'USD' && (
+                      <div className="mt-2 px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center justify-between">
+                        {usdRateLoading ? (
+                          <span className="text-xs text-blue-400 flex items-center gap-2">
+                            <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin" />
+                            Buscando cotação...
+                          </span>
+                        ) : usdRate ? (
+                          <span className="text-xs text-blue-400">
+                            Cotação atual: <span className="font-mono font-semibold">US$ 1 = {fmt(usdRate)}</span>
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-500">Cotação não disponível</span>
+                        )}
+                        <button type="button" onClick={fetchUsdRate} className="text-xs text-blue-400 hover:text-blue-300 underline ml-2">atualizar</button>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{currentConfig.fields.map(field => renderField(field))}</div>
+
+                  {/* Preview total investido com conversão */}
+                  {formData.quantity && formData.averagePrice && (
+                    <div className="p-3 bg-slate-800/50 rounded-xl">
+                      {formCurrency === 'USD' && usdRate ? (
+                        <>
+                          <p className="text-xs text-slate-500 mb-1">Total em dólar</p>
+                          <p className="text-lg font-bold font-mono text-white">{fmtUsd(parseFloat(formData.quantity) * parseFloat(formData.averagePrice))}</p>
+                          <p className="text-xs text-blue-400 mt-1">≈ {fmt(parseFloat(formData.quantity) * parseFloat(formData.averagePrice) * usdRate)} na cotação de hoje</p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-xs text-slate-500 mb-1">Total investido</p>
+                          <p className="text-lg font-bold font-mono text-white">{fmt(parseFloat(formData.quantity) * parseFloat(formData.averagePrice))}</p>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   <div>
                     <label className="block text-sm text-slate-400 mb-2">Observações</label>
                     <textarea value={formData.notes || ''} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input resize-none h-20" placeholder="Anotações sobre o ativo..." />
@@ -545,7 +702,12 @@ export default function Assets() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-700 p-6 w-full max-w-md rounded-2xl shadow-2xl">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white">Transação — <span className="text-emerald-400">{transactionAsset.ticker || transactionAsset.name}</span></h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold text-white">Transação — <span className="text-emerald-400">{transactionAsset.ticker || transactionAsset.name}</span></h2>
+                {transactionAsset.currency === 'USD' && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">USD</span>
+                )}
+              </div>
               <button onClick={() => setShowTransactionModal(false)} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"><X className="w-5 h-5" /></button>
             </div>
             <form onSubmit={handleTransaction} className="space-y-4">
@@ -563,7 +725,9 @@ export default function Assets() {
                   <input type="number" step="0.000001" value={transactionData.quantity} onChange={(e) => setTransactionData({ ...transactionData, quantity: e.target.value })} className="input" placeholder="0" required />
                 </div>
                 <div>
-                  <label className="block text-sm text-slate-400 mb-2">Preço *</label>
+                  <label className="block text-sm text-slate-400 mb-2">
+                    Preço {transactionAsset.currency === 'USD' ? '(US$)' : '(R$)'} *
+                  </label>
                   <input type="number" step="0.01" value={transactionData.price} onChange={(e) => setTransactionData({ ...transactionData, price: e.target.value })} className="input" placeholder="0,00" required />
                 </div>
               </div>
@@ -573,8 +737,20 @@ export default function Assets() {
               </div>
               {transactionData.quantity && transactionData.price && (
                 <div className="p-4 bg-slate-800/50 rounded-xl">
-                  <p className="text-sm text-slate-400">Total da operação</p>
-                  <p className="text-2xl font-bold text-white">{fmt(parseFloat(transactionData.quantity) * parseFloat(transactionData.price))}</p>
+                  {transactionAsset.currency === 'USD' ? (
+                    <>
+                      <p className="text-sm text-slate-400">Total em dólar</p>
+                      <p className="text-2xl font-bold text-white">{fmtUsd(parseFloat(transactionData.quantity) * parseFloat(transactionData.price))}</p>
+                      {usdRate && (
+                        <p className="text-xs text-blue-400 mt-1">≈ {fmt(parseFloat(transactionData.quantity) * parseFloat(transactionData.price) * usdRate)} hoje</p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm text-slate-400">Total da operação</p>
+                      <p className="text-2xl font-bold text-white">{fmt(parseFloat(transactionData.quantity) * parseFloat(transactionData.price))}</p>
+                    </>
+                  )}
                 </div>
               )}
               <div className="flex gap-3 pt-4 border-t border-slate-700">
