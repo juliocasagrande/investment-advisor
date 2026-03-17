@@ -4,44 +4,52 @@ const currencyService = require('./currency.service');
 class RebalanceService {
   async calculateAllocation(userId) {
     try {
-      // Auto-healing: garante coluna currency
-      await pool.query(`
-        ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'
-      `).catch(() => {});
+      // Garante coluna currency — aguarda conclusão antes de qualquer query
+      try {
+        await pool.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'`);
+      } catch (_) { /* coluna já existe */ }
 
-      // Busca cotação do dólar uma vez (cache 30min)
-      const usdRate = await currencyService.getUsdToBrl().catch(() => null);
+      // Busca cotação do dólar (cache 30min; fallback 1 para não quebrar cálculo)
+      let usdRate = 1;
+      try {
+        usdRate = (await currencyService.getUsdToBrl()) || 1;
+      } catch (_) { /* sem cotação, usa 1 (sem conversão) */ }
 
-      // Busca classes com seus ativos, distinguindo moeda
+      // Query principal: converte USD → BRL diretamente no SQL
       const classesResult = await pool.query(`
         SELECT 
           ac.*,
           COALESCE(SUM(
-            a.quantity * COALESCE(a.current_price, a.average_price) *
-            CASE WHEN COALESCE(a.currency, 'BRL') = 'USD' THEN $2 ELSE 1 END
-          ), 0) as current_value,
+            a.quantity
+            * COALESCE(a.current_price, a.average_price)
+            * CASE WHEN a.currency = 'USD' THEN $2::numeric ELSE 1 END
+          ), 0) AS current_value,
           COALESCE(SUM(
-            a.quantity * a.average_price *
-            CASE WHEN COALESCE(a.currency, 'BRL') = 'USD' THEN $2 ELSE 1 END
-          ), 0) as invested_value
+            a.quantity
+            * a.average_price
+            * CASE WHEN a.currency = 'USD' THEN $2::numeric ELSE 1 END
+          ), 0) AS invested_value
         FROM asset_classes ac
-        LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = ac.user_id AND a.quantity > 0
+        LEFT JOIN assets a
+          ON a.asset_class_id = ac.id
+         AND a.user_id = ac.user_id
+         AND a.quantity > 0
         WHERE ac.user_id = $1
         GROUP BY ac.id
         ORDER BY ac.target_percentage DESC
-      `, [userId, usdRate || 1]);
+      `, [userId, usdRate]);
 
       const classes = classesResult.rows;
-      const totalValue = classes.reduce((sum, c) => sum + parseFloat(c.current_value || 0), 0);
-      const totalInvested = classes.reduce((sum, c) => sum + parseFloat(c.invested_value || 0), 0);
+      const totalValue    = classes.reduce((s, c) => s + parseFloat(c.current_value  || 0), 0);
+      const totalInvested = classes.reduce((s, c) => s + parseFloat(c.invested_value || 0), 0);
 
       const allocation = classes.map(c => {
-        const currentValue = parseFloat(c.current_value) || 0;
-        const investedValue = parseFloat(c.invested_value) || 0;
-        const targetPercentage = parseFloat(c.target_percentage) || 0;
+        const currentValue      = parseFloat(c.current_value)   || 0;
+        const investedValue     = parseFloat(c.invested_value)  || 0;
+        const targetPercentage  = parseFloat(c.target_percentage) || 0;
         const currentPercentage = totalValue > 0 ? (currentValue / totalValue) * 100 : 0;
-        const difference = currentPercentage - targetPercentage;
-        
+        const difference        = currentPercentage - targetPercentage;
+
         return {
           id: c.id,
           name: c.name,
@@ -63,7 +71,7 @@ class RebalanceService {
         totalGain: totalValue - totalInvested,
         gainPercentage: totalInvested > 0 ? ((totalValue / totalInvested) - 1) * 100 : 0,
         allocation,
-        usdRate
+        usdRate: usdRate === 1 ? null : usdRate
       };
     } catch (error) {
       console.error('Erro ao calcular alocação:', error);
@@ -81,8 +89,11 @@ class RebalanceService {
       `, [userId]);
       const annualDividends = parseFloat(dividendsResult.rows[0]?.total || 0);
 
-      // Cotação do dólar para conversão
-      const usdRate = await currencyService.getUsdToBrl().catch(() => null);
+      // Cotação do dólar para conversão (fallback 1 = sem conversão)
+      let usdRate = 1;
+      try {
+        usdRate = (await currencyService.getUsdToBrl()) || 1;
+      } catch (_) { /* sem cotação */ }
 
       // 2. Buscar todos os ativos com preço atual, DY e classe
       const assetsResult = await pool.query(`
@@ -107,8 +118,8 @@ class RebalanceService {
 
       for (const asset of assetsResult.rows) {
         const priceOrig = parseFloat(asset.price || 0);
-        // Converte preço para BRL se ativo em USD
-        const priceBrl = (asset.currency === 'USD' && usdRate) ? priceOrig * usdRate : priceOrig;
+        // Converte para BRL se ativo em USD e temos cotação
+        const priceBrl = (asset.currency === 'USD' && usdRate > 1) ? priceOrig * usdRate : priceOrig;
         const value = parseFloat(asset.quantity) * priceBrl;
         if (value <= 0) continue;
 
