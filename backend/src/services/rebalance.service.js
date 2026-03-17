@@ -1,18 +1,35 @@
 const pool = require('../config/database');
+const currencyService = require('./currency.service');
 
 class RebalanceService {
   async calculateAllocation(userId) {
     try {
+      // Auto-healing: garante coluna currency
+      await pool.query(`
+        ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'
+      `).catch(() => {});
+
+      // Busca cotação do dólar uma vez (cache 30min)
+      const usdRate = await currencyService.getUsdToBrl().catch(() => null);
+
+      // Busca classes com seus ativos, distinguindo moeda
       const classesResult = await pool.query(`
-        SELECT ac.*, 
-          COALESCE(SUM(a.quantity * COALESCE(a.current_price, a.average_price)), 0) as current_value,
-          COALESCE(SUM(a.quantity * a.average_price), 0) as invested_value
+        SELECT 
+          ac.*,
+          COALESCE(SUM(
+            a.quantity * COALESCE(a.current_price, a.average_price) *
+            CASE WHEN COALESCE(a.currency, 'BRL') = 'USD' THEN $2 ELSE 1 END
+          ), 0) as current_value,
+          COALESCE(SUM(
+            a.quantity * a.average_price *
+            CASE WHEN COALESCE(a.currency, 'BRL') = 'USD' THEN $2 ELSE 1 END
+          ), 0) as invested_value
         FROM asset_classes ac
         LEFT JOIN assets a ON a.asset_class_id = ac.id AND a.user_id = ac.user_id AND a.quantity > 0
         WHERE ac.user_id = $1
         GROUP BY ac.id
         ORDER BY ac.target_percentage DESC
-      `, [userId]);
+      `, [userId, usdRate || 1]);
 
       const classes = classesResult.rows;
       const totalValue = classes.reduce((sum, c) => sum + parseFloat(c.current_value || 0), 0);
@@ -45,11 +62,12 @@ class RebalanceService {
         totalInvested,
         totalGain: totalValue - totalInvested,
         gainPercentage: totalInvested > 0 ? ((totalValue / totalInvested) - 1) * 100 : 0,
-        allocation
+        allocation,
+        usdRate
       };
     } catch (error) {
       console.error('Erro ao calcular alocação:', error);
-      return { totalValue: 0, totalInvested: 0, totalGain: 0, gainPercentage: 0, allocation: [] };
+      return { totalValue: 0, totalInvested: 0, totalGain: 0, gainPercentage: 0, allocation: [], usdRate: null };
     }
   }
 
@@ -63,11 +81,15 @@ class RebalanceService {
       `, [userId]);
       const annualDividends = parseFloat(dividendsResult.rows[0]?.total || 0);
 
+      // Cotação do dólar para conversão
+      const usdRate = await currencyService.getUsdToBrl().catch(() => null);
+
       // 2. Buscar todos os ativos com preço atual, DY e classe
       const assetsResult = await pool.query(`
         SELECT 
           a.id, a.ticker, a.quantity,
           COALESCE(a.current_price, a.average_price) as price,
+          COALESCE(a.currency, 'BRL') as currency,
           a.dividend_yield,
           ac.name as class_name,
           ac.color,
@@ -84,7 +106,10 @@ class RebalanceService {
       const classMap = {};
 
       for (const asset of assetsResult.rows) {
-        const value = parseFloat(asset.quantity) * parseFloat(asset.price || 0);
+        const priceOrig = parseFloat(asset.price || 0);
+        // Converte preço para BRL se ativo em USD
+        const priceBrl = (asset.currency === 'USD' && usdRate) ? priceOrig * usdRate : priceOrig;
+        const value = parseFloat(asset.quantity) * priceBrl;
         if (value <= 0) continue;
 
         // Prioridade: 1) dividend_yield do ativo (salvo no sync) 

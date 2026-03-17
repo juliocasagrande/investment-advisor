@@ -126,6 +126,7 @@ export default function Dashboard() {
   const allocation = data?.allocation || [];
   const suggestions = data?.suggestions || [];
   const history = data?.history || [];
+  const usdRate = data?.usdRate || null;
 
   // Converter suggestions para formato de exibição
   const recommendations = suggestions.map((s, i) => ({
@@ -166,10 +167,17 @@ export default function Dashboard() {
             )}
           </p>
         </div>
-        <button onClick={handleSync} disabled={syncing} className="btn btn-primary flex items-center gap-2">
-          <RefreshCw className={'w-4 h-4 ' + (syncing ? 'animate-spin' : '')} />
-          {syncing ? 'Sincronizando...' : 'Sincronizar Tudo'}
-        </button>
+        <div className="flex items-center gap-3">
+          {usdRate && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+              <span className="text-xs text-blue-400 font-mono">US$ 1 = {formatCurrency(usdRate)}</span>
+            </div>
+          )}
+          <button onClick={handleSync} disabled={syncing} className="btn btn-primary flex items-center gap-2">
+            <RefreshCw className={'w-4 h-4 ' + (syncing ? 'animate-spin' : '')} />
+            {syncing ? 'Sincronizando...' : 'Sincronizar Tudo'}
+          </button>
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -214,7 +222,14 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Allocation Chart */}
         <div className="card p-5">
-          <h3 className="font-semibold text-white mb-4">Alocação Atual</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-white">Alocação Atual</h3>
+            {usdRate && (
+              <span className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-1 rounded-lg font-mono">
+                USD convertido · {formatCurrency(usdRate)}
+              </span>
+            )}
+          </div>
           {allocation.length > 0 && allocation.some(a => a.currentValue > 0) ? (
             <div className="flex items-center gap-4">
               <div className="w-48 h-48">
