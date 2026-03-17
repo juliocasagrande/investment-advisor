@@ -259,11 +259,12 @@ export default function Assets() {
       const fetchedAssets = assetsRes.data?.assets || [];
       setAssets(fetchedAssets);
       setClasses(classesRes.data?.classes || []);
-      // Se o backend já devolveu o rate junto, usa ele
+      // O backend já devolve usdRate junto com os assets — usa direto
       if (assetsRes.data?.usdRate) {
         setUsdRate(assetsRes.data.usdRate);
       } else if (fetchedAssets.some(a => a.currency === 'USD')) {
-        fetchUsdRate();
+        // Fallback: busca separado e aguarda antes de liberar o loading
+        await fetchUsdRate();
       }
     } catch { toast.error('Erro ao carregar dados'); }
     finally { setLoading(false); }
@@ -366,22 +367,20 @@ export default function Assets() {
   const fmt = (v) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v || 0);
   const fmtUsd = (v) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v || 0);
 
-  // Helper: retorna valor em BRL de um asset (converte USD se necessário)
+  // Helper: retorna valor atual em BRL (converte USD se necessário)
   const getAssetValueBrl = (asset) => {
     const qty = parseFloat(asset.quantity) || 0;
-    if (asset.currency === 'USD' && usdRate) {
-      const price = parseFloat(asset.current_price_brl) ||
-        (parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0) * usdRate;
-      return qty * (price / qty || 0);
-    }
-    return qty * (parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0);
+    const price = parseFloat(asset.current_price) || parseFloat(asset.average_price) || 0;
+    const priceBrl = (asset.currency === 'USD' && usdRate) ? price * usdRate : price;
+    return qty * priceBrl;
   };
 
+  // Helper: retorna valor investido em BRL (converte USD se necessário)
   const getAssetInvestedBrl = (asset) => {
     const qty = parseFloat(asset.quantity) || 0;
     const avgPrice = parseFloat(asset.average_price) || 0;
-    if (asset.currency === 'USD' && usdRate) return qty * avgPrice * usdRate;
-    return qty * avgPrice;
+    const avgPriceBrl = (asset.currency === 'USD' && usdRate) ? avgPrice * usdRate : avgPrice;
+    return qty * avgPriceBrl;
   };
 
   const filteredAssets = assets.filter(a => {
