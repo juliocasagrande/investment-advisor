@@ -191,6 +191,19 @@ class AssetsController {
         usdRate = await currencyService.getUsdToBrl().catch(() => null);
       }
 
+      // Marcar ativos de previdência e usar present_value como valor exibido
+      result.rows.forEach(asset => {
+        if (asset.class_category === 'pension') {
+          asset.isPension = true;
+          asset.category = 'pension';
+          // Para pension, o "valor atual" é o present_value inserido manualmente
+          if (asset.present_value) {
+            asset.current_price = parseFloat(asset.present_value);
+            asset.quantity = 1;
+          }
+        }
+      });
+
       const assets = result.rows.map(asset => {
         if (asset.currency === 'USD' && usdRate) {
           const avgPriceBrl = parseFloat(asset.average_price) * usdRate;

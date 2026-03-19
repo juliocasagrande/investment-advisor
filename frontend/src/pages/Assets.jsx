@@ -281,6 +281,7 @@ export default function Assets() {
 
   // Moeda detectada pela categoria selecionada no formulário
   const isUsdCategory = !!(FIELD_CONFIG[selectedCategory]?.defaultCurrency === 'USD');
+  const isPensionCategory = selectedCategory === 'pension';
   // Moeda efetiva no formulário (pode ser sobrescrita pelo usuário)
   const formCurrency = formData.currency || (isUsdCategory ? 'USD' : 'BRL');
 
@@ -299,7 +300,19 @@ export default function Assets() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const payload = {
+      const isPension = selectedCategory === 'pension';
+      const payload = isPension ? {
+        assetClassId: parseInt(formData.assetClassId),
+        ticker: 'PREV',
+        name: formData.name || 'Previdência Privada',
+        type: 'Previdência',
+        market: 'BR',
+        currency: 'BRL',
+        quantity: 1,
+        averagePrice: parseFloat(formData.presentValue) || 0,
+        presentValue: parseFloat(formData.presentValue) || 0,
+        notes: formData.notes || ''
+      } : {
         assetClassId: parseInt(formData.assetClassId),
         ticker: formData.ticker?.toUpperCase() || formData.name,
         name: formData.name || formData.ticker,
@@ -345,12 +358,15 @@ export default function Assets() {
 
   const openEdit = (asset) => {
     const cls = classes.find(c => c.id === asset.asset_class_id);
-    setSelectedCategory(getCategoryFromClass(cls));
+    const category = getCategoryFromClass(cls);
+    setSelectedCategory(category);
     setEditingAsset(asset);
     setFormData({
       assetClassId: asset.asset_class_id, ticker: asset.ticker, name: asset.name,
       type: asset.type, quantity: asset.quantity, averagePrice: asset.average_price,
-      notes: asset.notes, currency: asset.currency || 'BRL'
+      notes: asset.notes, currency: asset.currency || 'BRL',
+      // Para previdência: popular o campo de saldo atual
+      ...(category === 'pension' && { presentValue: asset.present_value || asset.average_price || '' })
     });
     setShowModal(true);
   };
@@ -626,65 +642,105 @@ export default function Assets() {
 
               {selectedCategory && (
                 <>
-                  {/* Seletor de moeda — visível para todas as categorias */}
-                  <div>
-                    <label className="block text-sm text-slate-400 mb-2">Moeda da operação</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button type="button"
-                        onClick={() => setFormData({ ...formData, currency: 'BRL' })}
-                        className={`py-2.5 rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2 ${formCurrency === 'BRL' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
-                        🇧🇷 Real (BRL)
-                      </button>
-                      <button type="button"
-                        onClick={() => { setFormData({ ...formData, currency: 'USD' }); if (!usdRate) fetchUsdRate(); }}
-                        className={`py-2.5 rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2 ${formCurrency === 'USD' ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
-                        🇺🇸 Dólar (USD)
-                      </button>
-                    </div>
-                    {/* Taxa do dólar no formulário */}
-                    {formCurrency === 'USD' && (
-                      <div className="mt-2 px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center justify-between">
-                        {usdRateLoading ? (
-                          <span className="text-xs text-blue-400 flex items-center gap-2">
-                            <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin" />
-                            Buscando cotação...
-                          </span>
-                        ) : usdRate ? (
-                          <span className="text-xs text-blue-400">
-                            Cotação atual: <span className="font-mono font-semibold">US$ 1 = {fmt(usdRate)}</span>
-                          </span>
-                        ) : (
-                          <span className="text-xs text-slate-500">Cotação não disponível</span>
-                        )}
-                        <button type="button" onClick={fetchUsdRate} className="text-xs text-blue-400 hover:text-blue-300 underline ml-2">atualizar</button>
+                  {isPensionCategory ? (
+                    /* Formulário simplificado para Previdência Privada */
+                    <>
+                      <div className="p-3 bg-teal-500/10 border border-teal-500/20 rounded-xl">
+                        <p className="text-xs text-teal-400">🏦 Previdência Privada — insira o saldo atual informado pela seguradora/banco. Este valor não entra no rebalanceamento.</p>
                       </div>
-                    )}
-                  </div>
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-2">Nome / Descrição *</label>
+                        <input
+                          type="text"
+                          value={formData.name || ''}
+                          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                          className="input"
+                          placeholder="Ex: PGBL Bradesco, VGBL XP..."
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-2">Saldo Atual (R$) *</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={formData.presentValue || ''}
+                          onChange={(e) => setFormData({ ...formData, presentValue: e.target.value })}
+                          className="input"
+                          placeholder="Ex: 45000.00"
+                          required
+                        />
+                        {formData.presentValue && parseFloat(formData.presentValue) > 0 && (
+                          <p className="text-xs text-teal-400 mt-1 font-mono">{fmt(parseFloat(formData.presentValue))}</p>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-2">Observações</label>
+                        <textarea value={formData.notes || ''} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input resize-none h-16" placeholder="Tipo do plano, seguradora..." />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Seletor de moeda — visível para todas as categorias não-pension */}
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-2">Moeda da operação</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button type="button"
+                            onClick={() => setFormData({ ...formData, currency: 'BRL' })}
+                            className={`py-2.5 rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2 ${formCurrency === 'BRL' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
+                            🇧🇷 Real (BRL)
+                          </button>
+                          <button type="button"
+                            onClick={() => { setFormData({ ...formData, currency: 'USD' }); if (!usdRate) fetchUsdRate(); }}
+                            className={`py-2.5 rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2 ${formCurrency === 'USD' ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
+                            🇺🇸 Dólar (USD)
+                          </button>
+                        </div>
+                        {formCurrency === 'USD' && (
+                          <div className="mt-2 px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center justify-between">
+                            {usdRateLoading ? (
+                              <span className="text-xs text-blue-400 flex items-center gap-2">
+                                <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin" />
+                                Buscando cotação...
+                              </span>
+                            ) : usdRate ? (
+                              <span className="text-xs text-blue-400">
+                                Cotação atual: <span className="font-mono font-semibold">US$ 1 = {fmt(usdRate)}</span>
+                              </span>
+                            ) : (
+                              <span className="text-xs text-slate-500">Cotação não disponível</span>
+                            )}
+                            <button type="button" onClick={fetchUsdRate} className="text-xs text-blue-400 hover:text-blue-300 underline ml-2">atualizar</button>
+                          </div>
+                        )}
+                      </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{currentConfig.fields.map(field => renderField(field))}</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{currentConfig.fields.map(field => renderField(field))}</div>
 
-                  {/* Preview total investido com conversão */}
-                  {formData.quantity && formData.averagePrice && (
-                    <div className="p-3 bg-slate-800/50 rounded-xl">
-                      {formCurrency === 'USD' && usdRate ? (
-                        <>
-                          <p className="text-xs text-slate-500 mb-1">Total em dólar</p>
-                          <p className="text-lg font-bold font-mono text-white">{fmtUsd(parseFloat(formData.quantity) * parseFloat(formData.averagePrice))}</p>
-                          <p className="text-xs text-blue-400 mt-1">≈ {fmt(parseFloat(formData.quantity) * parseFloat(formData.averagePrice) * usdRate)} na cotação de hoje</p>
-                        </>
-                      ) : (
-                        <>
-                          <p className="text-xs text-slate-500 mb-1">Total investido</p>
-                          <p className="text-lg font-bold font-mono text-white">{fmt(parseFloat(formData.quantity) * parseFloat(formData.averagePrice))}</p>
-                        </>
+                      {formData.quantity && formData.averagePrice && (
+                        <div className="p-3 bg-slate-800/50 rounded-xl">
+                          {formCurrency === 'USD' && usdRate ? (
+                            <>
+                              <p className="text-xs text-slate-500 mb-1">Total em dólar</p>
+                              <p className="text-lg font-bold font-mono text-white">{fmtUsd(parseFloat(formData.quantity) * parseFloat(formData.averagePrice))}</p>
+                              <p className="text-xs text-blue-400 mt-1">≈ {fmt(parseFloat(formData.quantity) * parseFloat(formData.averagePrice) * usdRate)} na cotação de hoje</p>
+                            </>
+                          ) : (
+                            <>
+                              <p className="text-xs text-slate-500 mb-1">Total investido</p>
+                              <p className="text-lg font-bold font-mono text-white">{fmt(parseFloat(formData.quantity) * parseFloat(formData.averagePrice))}</p>
+                            </>
+                          )}
+                        </div>
                       )}
-                    </div>
-                  )}
 
-                  <div>
-                    <label className="block text-sm text-slate-400 mb-2">Observações</label>
-                    <textarea value={formData.notes || ''} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input resize-none h-20" placeholder="Anotações sobre o ativo..." />
-                  </div>
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-2">Observações</label>
+                        <textarea value={formData.notes || ''} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input resize-none h-20" placeholder="Anotações sobre o ativo..." />
+                      </div>
+                    </>
+                  )}
                 </>
               )}
               <div className="flex gap-3 pt-4 border-t border-slate-700">

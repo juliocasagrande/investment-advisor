@@ -40,15 +40,24 @@ class RebalanceService {
       `, [userId, usdRate]);
 
       const classes = classesResult.rows;
-      const totalValue    = classes.reduce((s, c) => s + parseFloat(c.current_value  || 0), 0);
-      const totalInvested = classes.reduce((s, c) => s + parseFloat(c.invested_value || 0), 0);
+
+      // Pension separada: entra no patrimônio total mas não no rebalanceamento
+      const pensionClasses = classes.filter(c => c.category === 'pension');
+      const regularClasses = classes.filter(c => c.category !== 'pension');
+      const pensionValue   = pensionClasses.reduce((s, c) => s + parseFloat(c.current_value || 0), 0);
+
+      const totalValue    = regularClasses.reduce((s, c) => s + parseFloat(c.current_value  || 0), 0);
+      const totalInvested = regularClasses.reduce((s, c) => s + parseFloat(c.invested_value || 0), 0);
 
       const allocation = classes.map(c => {
+        const isPension         = c.category === 'pension';
         const currentValue      = parseFloat(c.current_value)   || 0;
         const investedValue     = parseFloat(c.invested_value)  || 0;
-        const targetPercentage  = parseFloat(c.target_percentage) || 0;
-        const currentPercentage = totalValue > 0 ? (currentValue / totalValue) * 100 : 0;
-        const difference        = currentPercentage - targetPercentage;
+        const targetPercentage  = isPension ? 0 : (parseFloat(c.target_percentage) || 0);
+        // Pension % é calculada sobre o grandTotal para ser informativa
+        const base              = isPension ? (totalValue + pensionValue) : totalValue;
+        const currentPercentage = base > 0 ? (currentValue / base) * 100 : 0;
+        const difference        = isPension ? 0 : (currentPercentage - targetPercentage);
 
         return {
           id: c.id,
@@ -56,6 +65,7 @@ class RebalanceService {
           color: c.color,
           category: c.category,
           icon: c.icon,
+          isPension,
           targetPercentage,
           currentValue,
           investedValue,
@@ -65,9 +75,14 @@ class RebalanceService {
         };
       });
 
+      // Total geral inclui previdência (para exibição no Dashboard)
+      const grandTotal = totalValue + pensionValue;
+
       return {
         totalValue,
         totalInvested,
+        pensionValue,
+        grandTotal,
         totalGain: totalValue - totalInvested,
         gainPercentage: totalInvested > 0 ? ((totalValue / totalInvested) - 1) * 100 : 0,
         allocation,
@@ -89,62 +104,66 @@ class RebalanceService {
       `, [userId]);
       const annualDividends = parseFloat(dividendsResult.rows[0]?.total || 0);
 
+      // Cotação do dólar para conversão (fallback 1 = sem conversão)
       let usdRate = 1;
-      try { usdRate = (await currencyService.getUsdToBrl()) || 1; } catch (_) {}
+      try {
+        usdRate = (await currencyService.getUsdToBrl()) || 1;
+      } catch (_) { /* sem cotação */ }
 
       // 2. Buscar todos os ativos com preço atual, DY e classe
       const assetsResult = await pool.query(`
-        SELECT
-          a.id, a.ticker, a.name, a.quantity,
+        SELECT 
+          a.id, a.ticker, a.quantity,
           COALESCE(a.current_price, a.average_price) as price,
           COALESCE(a.currency, 'BRL') as currency,
-          COALESCE(a.dividend_yield, 0) as dividend_yield,
+          a.dividend_yield,
           ac.name as class_name,
           ac.color,
-          COALESCE(ac.category, '') as category,
-          COALESCE(ac.expected_yield, 0) as expected_yield
+          ac.expected_yield
         FROM assets a
         LEFT JOIN asset_classes ac ON ac.id = a.asset_class_id
-        WHERE a.user_id = $1 AND a.quantity > 0
+        WHERE a.user_id = $1 AND a.quantity > 0 AND COALESCE(ac.category, '') != 'pension'
         ORDER BY (a.quantity * COALESCE(a.current_price, a.average_price)) DESC
       `, [userId]);
 
       let estimatedAnnual = 0;
+      const breakdown = [];
+      // Agrupar por classe para o breakdown
       const classMap = {};
 
       for (const asset of assetsResult.rows) {
-        const priceOrig  = parseFloat(asset.price || 0);
-        const priceBrl   = (asset.currency === 'USD' && usdRate > 1) ? priceOrig * usdRate : priceOrig;
-        const value      = parseFloat(asset.quantity) * priceBrl;
+        const priceOrig = parseFloat(asset.price || 0);
+        // Converte para BRL se ativo em USD e temos cotação
+        const priceBrl = (asset.currency === 'USD' && usdRate > 1) ? priceOrig * usdRate : priceOrig;
+        const value = parseFloat(asset.quantity) * priceBrl;
         if (value <= 0) continue;
 
-        const assetDY    = parseFloat(asset.dividend_yield || 0);
-        const classYield = parseFloat(asset.expected_yield || 0);
-        const category   = (asset.category || '').toLowerCase();
-        const className  = (asset.class_name || '').toLowerCase();
-
+        // Prioridade: 1) dividend_yield do ativo (salvo no sync) 
+        //             2) expected_yield da classe
+        //             3) estimativa por nome da classe
         let yieldPercent = 0;
 
-        if (assetDY > 0) {
-          // Nível 1: DY real do ativo (vindo do sync)
-          yieldPercent = assetDY;
-        } else if (classYield > 0) {
-          // Nível 2: yield esperado configurado na classe
-          yieldPercent = classYield;
+        if (asset.dividend_yield && parseFloat(asset.dividend_yield) > 0) {
+          yieldPercent = parseFloat(asset.dividend_yield);
+        } else if (asset.expected_yield && parseFloat(asset.expected_yield) > 0) {
+          yieldPercent = parseFloat(asset.expected_yield);
         } else {
-          // Nível 3: estimativa por categoria/nome
-          if (category === 'crypto' || className.includes('cripto')) {
-            yieldPercent = 0;
-          } else if (category === 'fixed_income' || className.includes('renda fixa') || className.includes('tesouro')) {
+          // Estimativa por tipo de ativo baseada no nome da classe
+          const name = (asset.class_name || '').toLowerCase();
+          if (name.includes('renda fixa') || name.includes('tesouro') || name.includes('cdb') || name.includes('lci') || name.includes('lca')) {
             yieldPercent = 11;
-          } else if (category === 'fiis' || className.includes('fii')) {
+          } else if (name.includes('fii') || name.includes('imobiliário') || name.includes('real estate')) {
             yieldPercent = 8;
-          } else if (category === 'stocks_br' || className.includes('ação') || className.includes('dividendo')) {
+          } else if (name.includes('dividendo') || name.includes('dividend')) {
             yieldPercent = 6;
-          } else if (category === 'reits' || className.includes('reit')) {
+          } else if (name.includes('ação') || name.includes('ações') || name.includes('br')) {
+            yieldPercent = 4;
+          } else if (name.includes('reit')) {
             yieldPercent = 5;
-          } else if (category === 'stocks_us' || className.includes('eua') || className.includes('internacional')) {
+          } else if (name.includes('eua') || name.includes('us') || name.includes('internacional')) {
             yieldPercent = 3;
+          } else if (name.includes('cripto') || name.includes('crypto') || name.includes('metal') || name.includes('ouro')) {
+            yieldPercent = 0;
           } else {
             yieldPercent = 5;
           }
@@ -153,32 +172,40 @@ class RebalanceService {
         const estimated = value * (yieldPercent / 100);
         estimatedAnnual += estimated;
 
+        // Agrupar por classe para o breakdown
         const cls = asset.class_name || 'Outros';
         if (!classMap[cls]) {
-          classMap[cls] = { name: cls, color: asset.color || '#3B82F6', value: 0, estimatedAnnual: 0 };
+          classMap[cls] = {
+            name: cls,
+            color: asset.color || '#3B82F6',
+            value: 0,
+            yieldPercent,
+            estimatedAnnual: 0,
+          };
         }
         classMap[cls].value += value;
         classMap[cls].estimatedAnnual += estimated;
+        // Média ponderada do yield da classe
+        classMap[cls].yieldPercent = (classMap[cls].estimatedAnnual / classMap[cls].value) * 100;
       }
 
-      const breakdown = Object.values(classMap)
-        .filter(c => c.value > 0)
-        .map(c => ({
-          ...c,
-          yieldPercent:     c.value > 0 ? (c.estimatedAnnual / c.value) * 100 : 0,
-          estimatedMonthly: c.estimatedAnnual / 12,
-        }));
+      for (const cls of Object.values(classMap)) {
+        if (cls.value > 0) {
+          breakdown.push({
+            ...cls,
+            estimatedMonthly: cls.estimatedAnnual / 12,
+          });
+        }
+      }
 
-      console.log(`[PassiveIncome] userId=${userId} dividends=${annualDividends.toFixed(2)} estimated=${estimatedAnnual.toFixed(2)} assets=${assetsResult.rows.length}`);
-
-      // Usar dividendos reais se forem expressivos (> 50% da estimativa), senão usar estimativa
+      // Se há dividendos reais registrados (> estimativa), usar os reais
       const finalAnnual = annualDividends > estimatedAnnual * 0.5 ? annualDividends : estimatedAnnual;
 
       return {
-        totalMonthly:         Math.round(finalAnnual / 12 * 100) / 100,
-        totalAnnual:          Math.round(finalAnnual * 100) / 100,
+        totalMonthly: Math.round(finalAnnual / 12 * 100) / 100,
+        totalAnnual: Math.round(finalAnnual * 100) / 100,
         realizedLast12Months: annualDividends,
-        estimatedAnnual:      Math.round(estimatedAnnual * 100) / 100,
+        estimatedAnnual: Math.round(estimatedAnnual * 100) / 100,
         breakdown,
       };
     } catch (error) {
@@ -186,62 +213,48 @@ class RebalanceService {
       return { totalMonthly: 0, totalAnnual: 0, realizedLast12Months: 0, estimatedAnnual: 0, breakdown: [] };
     }
   }
+
   async generateRebalanceSuggestions(userId) {
     try {
-      let threshold = 5;
-      try {
-        const settingsRes = await pool.query(
-          'SELECT rebalance_threshold FROM user_settings WHERE user_id = $1', [userId]
-        );
-        const raw = parseFloat(settingsRes.rows[0]?.rebalance_threshold);
-        if (!isNaN(raw) && raw > 0) threshold = raw;
-      } catch (_) {}
-
       const allocation = await this.calculateAllocation(userId);
       const suggestions = [];
-      const overweight  = [];
-      const underweight = [];
+      const threshold = 3; // Limiar de 3% para sugestões
 
       for (const cls of allocation.allocation) {
         if (cls.targetPercentage <= 0) continue;
+        
         const diff = cls.currentPercentage - cls.targetPercentage;
-        if (diff > threshold)  overweight.push({ cls, diff });
-        else if (diff < 0)     underweight.push({ cls, diff });
-      }
-
-      for (const { cls, diff } of overweight) {
-        suggestions.push({
-          type: 'REDUCE',
-          classId: cls.id,
-          className: cls.name,
-          color: cls.color,
-          currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
-          targetPercentage: cls.targetPercentage,
-          difference: Math.round(diff * 10) / 10,
-          message: cls.name + ' está ' + Math.abs(diff).toFixed(1) + '% acima do target. Evite aportar nesta classe.',
-          priority: diff > threshold * 2 ? 'high' : 'medium'
-        });
-      }
-
-      const hasOverweight = overweight.length > 0;
-      for (const { cls, diff } of underweight) {
-        if (!hasOverweight && Math.abs(diff) <= threshold) continue;
-        suggestions.push({
-          type: 'INCREASE',
-          classId: cls.id,
-          className: cls.name,
-          color: cls.color,
-          currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
-          targetPercentage: cls.targetPercentage,
-          difference: Math.round(diff * 10) / 10,
-          message: cls.name + ' está ' + Math.abs(diff).toFixed(1) + '% abaixo do target. Priorize aportes nesta classe.',
-          priority: Math.abs(diff) > threshold * 2 ? 'high' : 'medium'
-        });
+        
+        if (diff > threshold) {
+          suggestions.push({
+            type: 'REDUCE',
+            classId: cls.id,
+            className: cls.name,
+            color: cls.color,
+            currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
+            targetPercentage: cls.targetPercentage,
+            difference: Math.round(diff * 10) / 10,
+            message: cls.name + ' está ' + Math.abs(diff).toFixed(1) + '% acima do target. Considere não aportar nesta classe.',
+            priority: diff > 10 ? 'high' : 'medium'
+          });
+        }
+        
+        if (diff < -threshold) {
+          suggestions.push({
+            type: 'INCREASE',
+            classId: cls.id,
+            className: cls.name,
+            color: cls.color,
+            currentPercentage: Math.round(cls.currentPercentage * 10) / 10,
+            targetPercentage: cls.targetPercentage,
+            difference: Math.round(diff * 10) / 10,
+            message: cls.name + ' está ' + Math.abs(diff).toFixed(1) + '% abaixo do target. Priorize aportes nesta classe.',
+            priority: diff < -10 ? 'high' : 'medium'
+          });
+        }
       }
 
       suggestions.sort((a, b) => {
-        if (a.type === 'REDUCE' && b.type !== 'REDUCE') return -1;
-        if (b.type === 'REDUCE' && a.type !== 'REDUCE') return 1;
         if (a.priority === 'high' && b.priority !== 'high') return -1;
         if (b.priority === 'high' && a.priority !== 'high') return 1;
         return Math.abs(b.difference) - Math.abs(a.difference);
@@ -254,107 +267,6 @@ class RebalanceService {
     }
   }
 
-  async generateIntraClassSuggestions(userId) {
-    try {
-      let threshold = 5;
-      try {
-        const settingsRes = await pool.query(
-          'SELECT rebalance_threshold FROM user_settings WHERE user_id = $1', [userId]
-        );
-        const raw = parseFloat(settingsRes.rows[0]?.rebalance_threshold);
-        if (!isNaN(raw) && raw > 0) threshold = raw;
-      } catch (_) {}
-
-      let usdRate = 1;
-      try { usdRate = (await currencyService.getUsdToBrl()) || 1; } catch (_) {}
-
-      const assetsRes = await pool.query(`
-        SELECT
-          a.id, a.ticker, a.name, a.quantity,
-          COALESCE(a.current_price, a.average_price) AS price,
-          COALESCE(a.currency, 'BRL') AS currency,
-          ac.id   AS class_id,
-          ac.name AS class_name,
-          ac.color
-        FROM assets a
-        JOIN asset_classes ac ON ac.id = a.asset_class_id
-        WHERE a.user_id = $1 AND a.quantity > 0
-        ORDER BY ac.id, a.ticker
-      `, [userId]);
-
-      const classMap = {};
-      for (const row of assetsRes.rows) {
-        const priceBrl = (row.currency === 'USD' && usdRate > 1)
-          ? parseFloat(row.price) * usdRate : parseFloat(row.price);
-        const value = parseFloat(row.quantity) * priceBrl;
-        if (!classMap[row.class_id]) {
-          classMap[row.class_id] = { classId: row.class_id, className: row.class_name, color: row.color, assets: [] };
-        }
-        classMap[row.class_id].assets.push({ id: row.id, ticker: row.ticker || row.name, name: row.name, value });
-      }
-
-      const result = [];
-      for (const cls of Object.values(classMap)) {
-        const { assets } = cls;
-        if (assets.length < 2) continue;
-        const totalClassValue = assets.reduce((s, a) => s + a.value, 0);
-        if (totalClassValue <= 0) continue;
-
-        const idealPct   = 100 / assets.length;
-        const idealValue = totalClassValue / assets.length;
-
-        const assetsWithPct = assets.map(a => ({
-          ...a,
-          currentPct:   (a.value / totalClassValue) * 100,
-          idealPct,
-          deviation:    ((a.value / totalClassValue) * 100) - idealPct,
-          surplusValue: a.value - idealValue
-        }));
-
-        if (!assetsWithPct.some(a => Math.abs(a.deviation) > threshold)) continue;
-
-        const overweight  = assetsWithPct.filter(a => a.deviation >  threshold).sort((a, b) => b.deviation - a.deviation);
-        const underweight = assetsWithPct.filter(a => a.deviation < -threshold).sort((a, b) => a.deviation - b.deviation);
-
-        const transfers = [];
-        const surplus = overweight.map(a => ({ ...a, available: a.surplusValue }));
-        const deficit  = underweight.map(a => ({ ...a, needed: Math.abs(a.surplusValue) }));
-        let si = 0, di = 0;
-        while (si < surplus.length && di < deficit.length) {
-          const move = Math.min(surplus[si].available, deficit[di].needed);
-          if (move > 0.01) transfers.push({ from: surplus[si].ticker, to: deficit[di].ticker, value: Math.round(move * 100) / 100 });
-          surplus[si].available -= move;
-          deficit[di].needed    -= move;
-          if (surplus[si].available < 0.01) si++;
-          if (deficit[di].needed   < 0.01) di++;
-        }
-
-        result.push({
-          classId: cls.classId, className: cls.className, color: cls.color,
-          threshold, idealPct: Math.round(idealPct * 10) / 10,
-          assets: assetsWithPct.map(a => ({
-            id: a.id, ticker: a.ticker, name: a.name,
-            value:      Math.round(a.value * 100) / 100,
-            currentPct: Math.round(a.currentPct * 10) / 10,
-            idealPct:   Math.round(a.idealPct * 10) / 10,
-            deviation:  Math.round(a.deviation * 10) / 10,
-            status: a.deviation > threshold ? 'over' : a.deviation < -threshold ? 'under' : 'ok'
-          })),
-          transfers,
-          contributions: underweight.map(a => ({
-            ticker: a.ticker, name: a.name,
-            value:      Math.round(Math.abs(a.surplusValue) * 100) / 100,
-            currentPct: Math.round(a.currentPct * 10) / 10,
-            idealPct:   Math.round(a.idealPct * 10) / 10
-          }))
-        });
-      }
-      return result;
-    } catch (error) {
-      console.error('Erro ao gerar sugestões intra-classe:', error);
-      return [];
-    }
-  }
   async calculateContributionTarget(userId, amount, macroContext = null) {
     try {
       const allocation = await this.calculateAllocation(userId);

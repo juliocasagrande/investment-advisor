@@ -37,6 +37,8 @@ class PortfolioController {
         summary: {
           totalValue: allocation.totalValue || 0,
           totalInvested: allocation.totalInvested || 0,
+          pensionValue: allocation.pensionValue || 0,
+          grandTotal: allocation.grandTotal || allocation.totalValue || 0,
           totalGain: allocation.totalGain || 0,
           gainPercentage: Math.round((allocation.gainPercentage || 0) * 100) / 100,
           monthlyIncome: passiveIncome.totalMonthly || 0,
