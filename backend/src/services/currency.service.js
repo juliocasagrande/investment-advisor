@@ -55,6 +55,14 @@ class CurrencyService {
   }
 
   /**
+   * Invalida o cache e força uma nova busca da cotação.
+   */
+  async forceRefresh() {
+    this._cache = { rate: null, fetchedAt: null };
+    return this.getUsdToBrl();
+  }
+
+  /**
    * Retorna objeto completo com rate + timestamp para expor na API.
    */
   async getRateInfo() {

@@ -2,6 +2,7 @@ const pool = require('../config/database');
 const rebalanceService = require('../services/rebalance.service');
 const macroService = require('../services/macro.service');
 const quotesService = require('../services/quotes.service');
+const currencyService = require('../services/currency.service');
 
 class PortfolioController {
   async getDashboard(req, res) {
@@ -29,6 +30,9 @@ class PortfolioController {
       // Gerar sugestões de rebalanceamento
       const suggestions = await rebalanceService.generateRebalanceSuggestions(userId);
 
+      // Cotação do dólar
+      const usdRate = await currencyService.getUsdToBrl();
+
       return res.json({
         summary: {
           totalValue: allocation.totalValue || 0,
@@ -39,6 +43,7 @@ class PortfolioController {
           annualIncome: passiveIncome.totalAnnual || 0,
           lastUpdate: lastUpdateResult.rows[0]?.last_update
         },
+        usdRate,
         allocation: allocation.allocation || [],
         passiveIncome: passiveIncome.breakdown || [],
         suggestions: suggestions || [],
@@ -126,6 +131,9 @@ class PortfolioController {
         // Delay entre requisições
         await new Promise(r => setTimeout(r, 300));
       }
+
+      // Forçar atualização da cotação do dólar junto com o sync
+      await currencyService.forceRefresh();
 
       // Salvar snapshot no histórico
       const allocation = await rebalanceService.calculateAllocation(userId);
