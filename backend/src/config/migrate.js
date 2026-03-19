@@ -221,6 +221,11 @@ async function migrate() {
       // portfolio_history
       "ALTER TABLE portfolio_history ADD COLUMN IF NOT EXISTS realized_gains DECIMAL(20,2)",
 
+      // dividends - colunas que podem não existir em bancos antigos
+      "ALTER TABLE dividends ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'DIVIDEND'",
+      "ALTER TABLE dividends ADD COLUMN IF NOT EXISTS ex_date DATE",
+      "ALTER TABLE dividends ADD COLUMN IF NOT EXISTS notes TEXT",
+
       // assets - colunas de cotação que faltavam
       "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dividend_yield DECIMAL(10,4)",
       "ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_update TIMESTAMP",
