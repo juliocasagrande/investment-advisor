@@ -3,18 +3,20 @@ const pool = require('./database');
 async function runQuery(sql, label) {
   try {
     await pool.query(sql);
-    // silent success
+    if (label) console.log(`  ✓ ${label}`);
   } catch (e) {
-    // Ignora "already exists" — são seguros
-    if (e.message && (e.message.includes('already exists') || e.message.includes('duplicate'))) return;
-    console.warn(`⚠️  [migrate] ${label || 'query'}: ${e.message}`);
+    if (e.message && (e.message.includes('already exists') || e.message.includes('duplicate'))) {
+      // seguro ignorar
+    } else {
+      console.warn(`  ⚠️  ${label || 'query'}: ${e.message}`);
+    }
   }
 }
 
 async function migrate() {
   console.log('🚀 Iniciando migrações...');
 
-  // ─── Tabelas principais ────────────────────────────────────────────────────
+  // ── 1. Tabelas base (sem foreign keys para evitar falha em cadeia) ──────────
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS users (
@@ -25,12 +27,12 @@ async function migrate() {
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
-  `, 'CREATE users');
+  `, 'TABLE users');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS user_settings (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+      user_id INTEGER,
       rebalance_threshold DECIMAL(5,2) DEFAULT 5,
       investment_horizon INTEGER DEFAULT 10,
       risk_profile VARCHAR(50) DEFAULT 'moderate',
@@ -39,14 +41,15 @@ async function migrate() {
       alphavantage_key TEXT,
       groq_api_key TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(user_id)
     )
-  `, 'CREATE user_settings');
+  `, 'TABLE user_settings');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS asset_classes (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      user_id INTEGER,
       name VARCHAR(100) NOT NULL,
       target_percentage DECIMAL(5,2) DEFAULT 0,
       color VARCHAR(20) DEFAULT '#3B82F6',
@@ -58,13 +61,13 @@ async function migrate() {
       updated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, name)
     )
-  `, 'CREATE asset_classes');
+  `, 'TABLE asset_classes');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS assets (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-      asset_class_id INTEGER REFERENCES asset_classes(id) ON DELETE CASCADE,
+      user_id INTEGER,
+      asset_class_id INTEGER,
       ticker VARCHAR(20) NOT NULL,
       name VARCHAR(255),
       type VARCHAR(50),
@@ -91,13 +94,13 @@ async function migrate() {
       updated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, ticker)
     )
-  `, 'CREATE assets');
+  `, 'TABLE assets');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS transactions (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-      asset_id INTEGER REFERENCES assets(id) ON DELETE CASCADE,
+      user_id INTEGER,
+      asset_id INTEGER,
       type VARCHAR(10) NOT NULL,
       quantity DECIMAL(20,8) NOT NULL,
       price DECIMAL(20,8) NOT NULL,
@@ -109,13 +112,13 @@ async function migrate() {
       realized_gain_percent DECIMAL(10,4),
       created_at TIMESTAMP DEFAULT NOW()
     )
-  `, 'CREATE transactions');
+  `, 'TABLE transactions');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS dividends (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-      asset_id INTEGER REFERENCES assets(id) ON DELETE CASCADE,
+      user_id INTEGER,
+      asset_id INTEGER,
       type VARCHAR(20) NOT NULL DEFAULT 'DIVIDEND',
       amount DECIMAL(15,2) NOT NULL,
       payment_date DATE NOT NULL,
@@ -123,12 +126,12 @@ async function migrate() {
       notes TEXT,
       created_at TIMESTAMP DEFAULT NOW()
     )
-  `, 'CREATE dividends');
+  `, 'TABLE dividends');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS goals (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      user_id INTEGER,
       name VARCHAR(255) NOT NULL,
       target_value DECIMAL(20,2) NOT NULL,
       target_date DATE,
@@ -139,12 +142,12 @@ async function migrate() {
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
-  `, 'CREATE goals');
+  `, 'TABLE goals');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS portfolio_history (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      user_id INTEGER,
       date DATE NOT NULL,
       total_value DECIMAL(20,2),
       total_invested DECIMAL(20,2),
@@ -155,28 +158,28 @@ async function migrate() {
       created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, date)
     )
-  `, 'CREATE portfolio_history');
+  `, 'TABLE portfolio_history');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS macro_analysis (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      user_id INTEGER,
       analysis_data JSONB,
       created_at TIMESTAMP DEFAULT NOW()
     )
-  `, 'CREATE macro_analysis');
+  `, 'TABLE macro_analysis');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS screener_filters (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      user_id INTEGER,
       name VARCHAR(100) NOT NULL,
       filters JSONB NOT NULL,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(user_id, name)
     )
-  `, 'CREATE screener_filters');
+  `, 'TABLE screener_filters');
 
   await runQuery(`
     CREATE TABLE IF NOT EXISTS quotes_cache (
@@ -189,9 +192,9 @@ async function migrate() {
       data JSONB,
       updated_at TIMESTAMP DEFAULT NOW()
     )
-  `, 'CREATE quotes_cache');
+  `, 'TABLE quotes_cache');
 
-  // ─── Migrações incrementais (ADD COLUMN IF NOT EXISTS) ────────────────────
+  // ── 2. Colunas incrementais (ADD COLUMN IF NOT EXISTS) ─────────────────────
   console.log('📦 Verificando colunas adicionais...');
 
   const alterations = [
@@ -232,7 +235,7 @@ async function migrate() {
     ["ALTER TABLE transactions ADD COLUMN IF NOT EXISTS realized_gain DECIMAL(20,2)", "transactions.realized_gain"],
     ["ALTER TABLE transactions ADD COLUMN IF NOT EXISTS realized_gain_percent DECIMAL(10,4)", "transactions.realized_gain_percent"],
 
-    // dividends
+    // dividends — todas as colunas que podem faltar em bancos antigos
     ["ALTER TABLE dividends ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'DIVIDEND'", "dividends.type"],
     ["ALTER TABLE dividends ADD COLUMN IF NOT EXISTS ex_date DATE", "dividends.ex_date"],
     ["ALTER TABLE dividends ADD COLUMN IF NOT EXISTS notes TEXT", "dividends.notes"],
@@ -240,7 +243,7 @@ async function migrate() {
     // portfolio_history
     ["ALTER TABLE portfolio_history ADD COLUMN IF NOT EXISTS realized_gains DECIMAL(20,2)", "portfolio_history.realized_gains"],
 
-    // macro_analysis — coluna que pode não existir em bancos antigos
+    // macro_analysis
     ["ALTER TABLE macro_analysis ADD COLUMN IF NOT EXISTS analysis_data JSONB", "macro_analysis.analysis_data"],
   ];
 
@@ -248,8 +251,7 @@ async function migrate() {
     await runQuery(sql, label);
   }
 
-  // ─── Populações de dados padrão ───────────────────────────────────────────
-  console.log('📊 Aplicando defaults de expected_yield...');
+  // ── 3. Defaults de expected_yield por categoria ────────────────────────────
   await runQuery(`
     UPDATE asset_classes SET expected_yield = CASE
       WHEN category = 'fixed_income' AND (expected_yield IS NULL OR expected_yield = 0) THEN 11
@@ -261,9 +263,9 @@ async function migrate() {
       ELSE expected_yield
     END
     WHERE expected_yield IS NULL OR (expected_yield = 0 AND category != 'crypto')
-  `, 'UPDATE asset_classes expected_yield defaults');
+  `, 'UPDATE asset_classes.expected_yield defaults');
 
-  // ─── Índices ───────────────────────────────────────────────────────────────
+  // ── 4. Índices ─────────────────────────────────────────────────────────────
   console.log('📇 Criando índices...');
 
   const indexes = [
@@ -283,7 +285,20 @@ async function migrate() {
     await runQuery(sql, label);
   }
 
-  console.log('✅ Migrações concluídas com sucesso!');
+  // ── 5. Verificação final ───────────────────────────────────────────────────
+  const criticalTables = ['users', 'assets', 'dividends', 'transactions', 'macro_analysis'];
+  console.log('🔍 Verificando tabelas críticas...');
+  for (const table of criticalTables) {
+    try {
+      const r = await pool.query(`SELECT to_regclass('public.${table}') as exists`);
+      const exists = r.rows[0]?.exists;
+      console.log(`  ${exists ? '✅' : '❌'} ${table}: ${exists ? 'OK' : 'NÃO EXISTE!'}`);
+    } catch (e) {
+      console.warn(`  ⚠️  Não foi possível verificar ${table}: ${e.message}`);
+    }
+  }
+
+  console.log('✅ Migrações concluídas!');
 }
 
 module.exports = { migrate };
