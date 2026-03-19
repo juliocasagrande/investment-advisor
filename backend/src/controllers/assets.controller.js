@@ -32,10 +32,16 @@ class AssetsController {
   // Listar classes de ativos
   async listClasses(req, res) {
     try {
-      // Auto-healing: garantir que a classe Criptomoedas existe para usuários antigos
+      // Auto-healing: garantir que classes essenciais existem para usuários antigos
       await pool.query(`
         INSERT INTO asset_classes (user_id, name, target_percentage, color, expected_yield, icon, category)
         VALUES ($1, 'Criptomoedas', 5, '#F97316', 0, '₿', 'crypto')
+        ON CONFLICT (user_id, name) DO NOTHING
+      `, [req.userId]).catch(() => {});
+
+      await pool.query(`
+        INSERT INTO asset_classes (user_id, name, target_percentage, color, expected_yield, icon, category, description)
+        VALUES ($1, 'Previdência Privada', 0, '#14B8A6', 0, '🏦', 'pension', 'PGBL, VGBL')
         ON CONFLICT (user_id, name) DO NOTHING
       `, [req.userId]).catch(() => {});
 
