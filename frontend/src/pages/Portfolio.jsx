@@ -175,7 +175,7 @@ export default function Portfolio() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="stat-card bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border-emerald-500/20">
           <p className="text-2xl font-bold text-white">
-            {formatCurrency(allocationData.totalValue || 0)}
+            {formatCurrency(allocationData.grandTotal || allocationData.totalValue || 0)}
           </p>
           <p className="text-xs text-slate-400 mt-1">Valor Total</p>
         </div>

@@ -190,7 +190,7 @@ export default function Dashboard() {
             <DollarSign className="w-5 h-5 text-emerald-400" />
             {(summary.totalGain || 0) >= 0 ? <ArrowUpRight className="w-4 h-4 text-emerald-400" /> : <ArrowDownRight className="w-4 h-4 text-red-400" />}
           </div>
-          <p className="text-2xl font-bold text-white">{formatCurrency(summary.totalValue)}</p>
+          <p className="text-2xl font-bold text-white">{formatCurrency(grandTotal)}</p>
           <p className="text-xs text-slate-400 mt-1">Patrimônio Total</p>
         </div>
 

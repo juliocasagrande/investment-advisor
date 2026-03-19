@@ -151,7 +151,7 @@ class PortfolioController {
           snapshot = EXCLUDED.snapshot
       `, [
         userId,
-        allocation.totalValue,
+        allocation.grandTotal || allocation.totalValue,
         allocation.totalInvested,
         allocation.totalGain,
         allocation.gainPercentage,
@@ -230,9 +230,9 @@ class PortfolioController {
 
       const weightedYield = 10; // Yield médio estimado
       const projection = [];
-      let currentValue = allocation.totalValue || 0;
+      let currentValue = allocation.grandTotal || allocation.totalValue || 0;
       const monthlyReturn = Math.pow(1 + weightedYield / 100, 1/12) - 1;
-      const incomeYield = passiveIncome.totalAnnual / (allocation.totalValue || 1) / 12;
+      const incomeYield = passiveIncome.totalAnnual / (allocation.grandTotal || allocation.totalValue || 1) / 12;
 
       for (let i = 0; i <= parseInt(months); i++) {
         projection.push({
@@ -244,7 +244,7 @@ class PortfolioController {
         currentValue = currentValue * (1 + monthlyReturn) + contribution;
       }
 
-      return res.json({ currentValue: allocation.totalValue, projection });
+      return res.json({ currentValue: allocation.grandTotal || allocation.totalValue, projection });
     } catch (error) {
       console.error('Erro na projeção:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });
