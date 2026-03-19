@@ -223,7 +223,21 @@ async function migrate() {
 
       // assets - colunas de cotação que faltavam
       "ALTER TABLE assets ADD COLUMN IF NOT EXISTS dividend_yield DECIMAL(10,4)",
-      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_update TIMESTAMP"
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_update TIMESTAMP",
+
+      // user_settings - colunas adicionais
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS brapi_token TEXT",
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS alphavantage_key TEXT",
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS rebalance_threshold DECIMAL(5,2) DEFAULT 5",
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS investment_horizon INTEGER DEFAULT 10",
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS risk_profile VARCHAR(50) DEFAULT 'moderate'",
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS monthly_contribution DECIMAL(15,2) DEFAULT 0",
+
+      // macro_analysis - coluna analysis_data que pode não existir em bancos antigos
+      "ALTER TABLE macro_analysis ADD COLUMN IF NOT EXISTS analysis_data JSONB",
+
+      // assets - currency para ativos USD
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'"
     ];
 
     for (const sql of alterations) {

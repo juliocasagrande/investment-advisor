@@ -1,14 +1,13 @@
 FROM node:20-alpine
-
 WORKDIR /app
-
 COPY package*.json ./
-
-# Usar npm install para regenerar o lock file
-RUN npm install --omit=dev
-
+RUN npm ci
 COPY . .
 
-EXPOSE 3001
+# ARG permite que o Railway injete a variável no momento do build
+ARG VITE_API_URL=https://investment-advisor-production.up.railway.app/api
+ENV VITE_API_URL=$VITE_API_URL
 
+RUN npm run build
+EXPOSE 3000
 CMD ["npm", "start"]
