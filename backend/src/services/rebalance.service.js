@@ -215,23 +215,19 @@ class RebalanceService {
       const allocation = await this.calculateAllocation(userId);
       const suggestions = [];
 
-      // Separar classes acima e abaixo do target
       const overweight  = [];
       const underweight = [];
 
       for (const cls of allocation.allocation) {
         if (cls.targetPercentage <= 0) continue;
         const diff = cls.currentPercentage - cls.targetPercentage;
-
         if (diff > threshold) {
           overweight.push({ cls, diff });
         } else if (diff < 0) {
-          // Toda classe abaixo do target entra — não exige threshold
           underweight.push({ cls, diff });
         }
       }
 
-      // Sugestões REDUCE para classes acima do threshold
       for (const { cls, diff } of overweight) {
         suggestions.push({
           type: 'REDUCE',
@@ -246,14 +242,10 @@ class RebalanceService {
         });
       }
 
-      // Sugestões INCREASE para classes abaixo do target
-      // — sempre geradas quando há pelo menos uma classe acima do threshold,
-      //   ou quando o desvio individual supera o threshold
       const hasOverweight = overweight.length > 0;
       for (const { cls, diff } of underweight) {
         const aboveThreshold = Math.abs(diff) > threshold;
         if (!hasOverweight && !aboveThreshold) continue;
-
         suggestions.push({
           type: 'INCREASE',
           classId: cls.id,
@@ -267,7 +259,6 @@ class RebalanceService {
         });
       }
 
-      // Ordenar: REDUCE primeiro, depois INCREASE por maior desvio absoluto
       suggestions.sort((a, b) => {
         if (a.type === 'REDUCE' && b.type !== 'REDUCE') return -1;
         if (b.type === 'REDUCE' && a.type !== 'REDUCE') return 1;
@@ -279,6 +270,141 @@ class RebalanceService {
       return suggestions;
     } catch (error) {
       console.error('Erro ao gerar sugestões:', error);
+      return [];
+    }
+  }
+
+  async generateIntraClassSuggestions(userId) {
+    try {
+      let threshold = 5;
+      try {
+        const settingsRes = await pool.query(
+          'SELECT rebalance_threshold FROM user_settings WHERE user_id = $1',
+          [userId]
+        );
+        const raw = parseFloat(settingsRes.rows[0]?.rebalance_threshold);
+        if (!isNaN(raw) && raw > 0) threshold = raw;
+      } catch (_) {}
+
+      let usdRate = 1;
+      try { usdRate = (await currencyService.getUsdToBrl()) || 1; } catch (_) {}
+
+      const assetsRes = await pool.query(`
+        SELECT
+          a.id, a.ticker, a.name, a.quantity,
+          COALESCE(a.current_price, a.average_price) AS price,
+          COALESCE(a.currency, 'BRL') AS currency,
+          a.average_price,
+          ac.id   AS class_id,
+          ac.name AS class_name,
+          ac.color
+        FROM assets a
+        JOIN asset_classes ac ON ac.id = a.asset_class_id
+        WHERE a.user_id = $1 AND a.quantity > 0
+        ORDER BY ac.id, a.ticker
+      `, [userId]);
+
+      const classMap = {};
+      for (const row of assetsRes.rows) {
+        const priceBrl = (row.currency === 'USD' && usdRate > 1)
+          ? parseFloat(row.price) * usdRate
+          : parseFloat(row.price);
+        const value = parseFloat(row.quantity) * priceBrl;
+
+        if (!classMap[row.class_id]) {
+          classMap[row.class_id] = {
+            classId: row.class_id,
+            className: row.class_name,
+            color: row.color,
+            assets: []
+          };
+        }
+        classMap[row.class_id].assets.push({
+          id: row.id,
+          ticker: row.ticker || row.name,
+          name: row.name,
+          value
+        });
+      }
+
+      const result = [];
+
+      for (const cls of Object.values(classMap)) {
+        const { assets } = cls;
+        if (assets.length < 2) continue;
+
+        const totalClassValue = assets.reduce((s, a) => s + a.value, 0);
+        if (totalClassValue <= 0) continue;
+
+        const idealPct   = 100 / assets.length;
+        const idealValue = totalClassValue / assets.length;
+
+        const assetsWithPct = assets.map(a => ({
+          ...a,
+          currentPct:   (a.value / totalClassValue) * 100,
+          idealPct,
+          deviation:    ((a.value / totalClassValue) * 100) - idealPct,
+          surplusValue: a.value - idealValue
+        }));
+
+        const hasDeviation = assetsWithPct.some(a => Math.abs(a.deviation) > threshold);
+        if (!hasDeviation) continue;
+
+        const overweight  = assetsWithPct.filter(a => a.deviation >  threshold).sort((a, b) => b.deviation - a.deviation);
+        const underweight = assetsWithPct.filter(a => a.deviation < -threshold).sort((a, b) => a.deviation - b.deviation);
+
+        const transfers = [];
+        const surplus = overweight.map(a => ({ ...a, available: a.surplusValue }));
+        const deficit  = underweight.map(a => ({ ...a, needed: Math.abs(a.surplusValue) }));
+
+        let si = 0, di = 0;
+        while (si < surplus.length && di < deficit.length) {
+          const move = Math.min(surplus[si].available, deficit[di].needed);
+          if (move > 0.01) {
+            transfers.push({
+              from:  surplus[si].ticker,
+              to:    deficit[di].ticker,
+              value: Math.round(move * 100) / 100
+            });
+          }
+          surplus[si].available -= move;
+          deficit[di].needed    -= move;
+          if (surplus[si].available < 0.01) si++;
+          if (deficit[di].needed   < 0.01) di++;
+        }
+
+        result.push({
+          classId:   cls.classId,
+          className: cls.className,
+          color:     cls.color,
+          threshold,
+          idealPct:  Math.round(idealPct * 10) / 10,
+          assets: assetsWithPct.map(a => ({
+            id:         a.id,
+            ticker:     a.ticker,
+            name:       a.name,
+            value:      Math.round(a.value * 100) / 100,
+            currentPct: Math.round(a.currentPct * 10) / 10,
+            idealPct:   Math.round(a.idealPct * 10) / 10,
+            deviation:  Math.round(a.deviation * 10) / 10,
+            status:     a.deviation >  threshold ? 'over'
+                      : a.deviation < -threshold ? 'under'
+                      : 'ok'
+          })),
+          transfers,
+          contributions: underweight.map(a => ({
+            ticker:     a.ticker,
+            name:       a.name,
+            value:      Math.round(Math.abs(a.surplusValue) * 100) / 100,
+            currentPct: Math.round(a.currentPct * 10) / 10,
+            idealPct:   Math.round(a.idealPct * 10) / 10
+          }))
+        });
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Erro ao gerar sugestões intra-classe:', error);
       return [];
     }
   }
