@@ -309,7 +309,7 @@ export default function Assets() {
         market: 'BR',
         currency: 'BRL',
         quantity: 1,
-        averagePrice: parseFloat(formData.presentValue) || 0,
+        averagePrice: parseFloat(formData.averagePrice) || parseFloat(formData.presentValue) || 0,
         presentValue: parseFloat(formData.presentValue) || 0,
         notes: formData.notes || ''
       } : {
@@ -366,7 +366,10 @@ export default function Assets() {
       type: asset.type, quantity: asset.quantity, averagePrice: asset.average_price,
       notes: asset.notes, currency: asset.currency || 'BRL',
       // Para previdência: popular o campo de saldo atual
-      ...(category === 'pension' && { presentValue: asset.present_value || asset.average_price || '' })
+      ...(category === 'pension' && {
+        presentValue: asset.present_value || '',
+        averagePrice: asset.average_price || ''
+      })
     });
     setShowModal(true);
   };
@@ -673,6 +676,21 @@ export default function Assets() {
                         />
                         {formData.presentValue && parseFloat(formData.presentValue) > 0 && (
                           <p className="text-xs text-teal-400 mt-1 font-mono">{fmt(parseFloat(formData.presentValue))}</p>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-2">Preço Médio (R$)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={formData.averagePrice || ''}
+                          onChange={(e) => setFormData({ ...formData, averagePrice: e.target.value })}
+                          className="input"
+                          placeholder="Ex: 38000.00"
+                        />
+                        {formData.averagePrice && parseFloat(formData.averagePrice) > 0 && (
+                          <p className="text-xs text-slate-400 mt-1 font-mono">{fmt(parseFloat(formData.averagePrice))}</p>
                         )}
                       </div>
                       <div>
