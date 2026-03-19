@@ -237,7 +237,13 @@ async function migrate() {
       "ALTER TABLE macro_analysis ADD COLUMN IF NOT EXISTS analysis_data JSONB",
 
       // assets - currency para ativos USD
-      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'"
+      "ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'BRL'",
+
+      // asset_classes - expected_yield pode não existir em bancos antigos
+      "ALTER TABLE asset_classes ADD COLUMN IF NOT EXISTS expected_yield DECIMAL(5,2) DEFAULT 0",
+
+      // asset_classes - garantir expected_yield padrão por categoria para classes sem valor definido
+      "UPDATE asset_classes SET expected_yield = CASE WHEN category = 'fixed_income' AND (expected_yield IS NULL OR expected_yield = 0) THEN 11 WHEN category = 'stocks_br' AND (expected_yield IS NULL OR expected_yield = 0) THEN 6 WHEN category = 'fiis' AND (expected_yield IS NULL OR expected_yield = 0) THEN 8 WHEN category = 'stocks_us' AND (expected_yield IS NULL OR expected_yield = 0) THEN 3 WHEN category = 'reits' AND (expected_yield IS NULL OR expected_yield = 0) THEN 5 WHEN category = 'crypto' THEN 0 ELSE expected_yield END WHERE expected_yield IS NULL OR (expected_yield = 0 AND category != 'crypto')" 
     ];
 
     for (const sql of alterations) {
