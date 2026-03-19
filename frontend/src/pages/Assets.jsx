@@ -575,20 +575,28 @@ export default function Assets() {
                         const gain = currentValueBrl - investedValueBrl;
                         const gainPercent = investedValueBrl > 0 ? (gain / investedValueBrl) * 100 : 0;
 
+                        const isPension = asset.isPension || asset.category === 'pension';
                         return (
                           <tr key={asset.id} className="hover:bg-slate-800/20 transition-colors">
                             <td className="py-3 px-5">
                               <div className="flex items-center gap-2">
-                                <p className="font-mono font-bold text-emerald-400">{asset.ticker || asset.name}</p>
-                                {isUsd && (
+                                <p className="font-mono font-bold text-emerald-400">{asset.name || asset.ticker}</p>
+                                {isPension && (
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400 border border-teal-500/30">PREV</span>
+                                )}
+                                {isUsd && !isPension && (
                                   <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">USD</span>
                                 )}
                               </div>
-                              <p className="text-xs text-slate-500 truncate max-w-[160px]">{asset.name || asset.type}</p>
+                              <p className="text-xs text-slate-500 truncate max-w-[160px]">{isPension ? asset.type : (asset.name || asset.type)}</p>
                             </td>
-                            <td className="py-3 px-4 text-right font-mono text-sm text-slate-300">{qty.toLocaleString('pt-BR')}</td>
+                            <td className="py-3 px-4 text-right font-mono text-sm text-slate-300">
+                              {isPension ? <span className="text-slate-600 text-xs">—</span> : qty.toLocaleString('pt-BR')}
+                            </td>
                             <td className="py-3 px-4 text-right font-mono text-sm text-slate-400">
-                              {isUsd ? (
+                              {isPension
+                                ? (avgPriceOrig > 0 ? fmt(avgPriceOrig) : <span className="text-slate-600 text-xs">—</span>)
+                                : isUsd ? (
                                 <div>
                                   <p>{fmtUsd(avgPriceOrig)}</p>
                                   {usdRate && <p className="text-xs text-slate-600">{fmt(avgPriceBrl)}</p>}
@@ -596,7 +604,9 @@ export default function Assets() {
                               ) : fmt(avgPriceOrig)}
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-sm text-white">
-                              {isUsd ? (
+                              {isPension
+                                ? fmt(parseFloat(asset.present_value) || currentPriceOrig)
+                                : isUsd ? (
                                 <div>
                                   <p>{fmtUsd(currentPriceOrig)}</p>
                                   {usdRate && <p className="text-xs text-slate-500">{fmt(currentPriceBrl)}</p>}
@@ -605,10 +615,13 @@ export default function Assets() {
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-sm font-medium text-white">{fmt(currentValueBrl)}</td>
                             <td className="py-3 px-4 text-right">
-                              <span className={`inline-flex items-center gap-1 text-sm font-mono ${gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {gain >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                                {gainPercent.toFixed(1)}%
-                              </span>
+                              {isPension && avgPriceOrig === 0
+                                ? <span className="text-slate-600 text-xs">—</span>
+                                : <span className={`inline-flex items-center gap-1 text-sm font-mono ${gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                    {gain >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                                    {gain >= 0 ? '+' : ''}{gainPercent.toFixed(1)}%
+                                  </span>
+                              }
                             </td>
                             <td className="py-3 px-4">
                               <div className="flex items-center justify-end gap-1">
@@ -663,7 +676,22 @@ export default function Assets() {
                         />
                       </div>
                       <div>
-                        <label className="block text-sm text-slate-400 mb-2">Saldo Atual (R$) *</label>
+                        <label className="block text-sm text-slate-400 mb-2">Preço Médio (R$) <span className="text-slate-500 text-xs">— valor investido</span></label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={formData.averagePrice || ''}
+                          onChange={(e) => setFormData({ ...formData, averagePrice: e.target.value })}
+                          className="input"
+                          placeholder="Ex: 38000.00"
+                        />
+                        {formData.averagePrice && parseFloat(formData.averagePrice) > 0 && (
+                          <p className="text-xs text-slate-500 mt-1 font-mono">{fmt(parseFloat(formData.averagePrice))}</p>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-2">Valor Atual (R$) *  <span className="text-slate-500 text-xs">— saldo atualizado</span></label>
                         <input
                           type="number"
                           step="0.01"
@@ -678,21 +706,24 @@ export default function Assets() {
                           <p className="text-xs text-teal-400 mt-1 font-mono">{fmt(parseFloat(formData.presentValue))}</p>
                         )}
                       </div>
-                      <div>
-                        <label className="block text-sm text-slate-400 mb-2">Preço Médio (R$)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={formData.averagePrice || ''}
-                          onChange={(e) => setFormData({ ...formData, averagePrice: e.target.value })}
-                          className="input"
-                          placeholder="Ex: 38000.00"
-                        />
-                        {formData.averagePrice && parseFloat(formData.averagePrice) > 0 && (
-                          <p className="text-xs text-slate-400 mt-1 font-mono">{fmt(parseFloat(formData.averagePrice))}</p>
-                        )}
-                      </div>
+                      {/* Preview de rendimento */}
+                      {formData.averagePrice && formData.presentValue &&
+                        parseFloat(formData.averagePrice) > 0 && parseFloat(formData.presentValue) > 0 && (() => {
+                          const avg = parseFloat(formData.averagePrice);
+                          const cur = parseFloat(formData.presentValue);
+                          const gain = cur - avg;
+                          const pct = (gain / avg) * 100;
+                          return (
+                            <div className={`col-span-2 flex items-center justify-between px-3 py-2 rounded-xl border text-sm font-mono ${
+                              gain >= 0
+                                ? 'bg-green-500/10 border-green-500/20 text-green-400'
+                                : 'bg-red-500/10 border-red-500/20 text-red-400'
+                            }`}>
+                              <span>Rendimento</span>
+                              <span>{gain >= 0 ? '+' : ''}{fmt(gain)} ({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
+                            </div>
+                          );
+                        })()}
                       <div>
                         <label className="block text-sm text-slate-400 mb-2">Observações</label>
                         <textarea value={formData.notes || ''} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input resize-none h-16" placeholder="Tipo do plano, seguradora..." />
