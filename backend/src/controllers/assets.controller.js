@@ -313,10 +313,14 @@ class AssetsController {
       const classCategory = classCheck.rows[0].category || '';
       const resolvedCurrency = currency || (USD_CATEGORIES.has(classCategory) ? 'USD' : 'BRL');
 
+      // Inferir mercado pela moeda quando não especificado explicitamente
+      // Permite que metals (GLD, IAU) com currency=USD sejam buscados na AlphaVantage
+      const resolvedMarket = (resolvedCurrency === 'USD' && (!market || market === 'BR')) ? 'US' : market;
+
       let finalCurrentPrice = currentPrice || averagePrice;
 
       // Busca cotação apenas para ativos sem preço definido
-      if (!currentPrice && market !== 'CRYPTO' && ticker) {
+      if (!currentPrice && resolvedMarket !== 'CRYPTO' && ticker) {
         try {
           const settings = await pool.query(
             'SELECT brapi_token, alphavantage_key FROM user_settings WHERE user_id = $1',
@@ -326,7 +330,7 @@ class AssetsController {
           
           const quote = await quotesService.getQuote(
             ticker.toUpperCase(), 
-            market, 
+            resolvedMarket, 
             brapi_token || process.env.BRAPI_TOKEN,
             alphavantage_key || process.env.ALPHAVANTAGE_KEY
           );
@@ -349,7 +353,7 @@ class AssetsController {
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         RETURNING *
       `, [
-        req.userId, assetClassId, ticker ? ticker.toUpperCase() : null, name, type, market, resolvedCurrency,
+        req.userId, assetClassId, ticker ? ticker.toUpperCase() : null, name, type, resolvedMarket, resolvedCurrency,
         quantity, averagePrice, finalCurrentPrice, notes,
         fixedIncomeType, indexer, rate, maturityDate || null, issuer,
         sector, walletAddress, network, presentValue

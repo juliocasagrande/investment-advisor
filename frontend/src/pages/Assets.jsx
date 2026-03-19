@@ -81,10 +81,11 @@ const FIELD_CONFIG = {
   metals: {
     label: 'Metais Preciosos', icon: '🥇',
     fields: [
-      { name: 'name', label: 'Metal', type: 'select', options: ['Ouro','Prata','Platina','Paládio'], required: true },
-      { name: 'type', label: 'Forma', type: 'select', options: ['Físico','ETF','Fundo','BDR'] },
-      { name: 'quantity', label: 'Quantidade', type: 'number', step: '0.01', required: true },
-      { name: 'averagePrice', label: 'Preço Médio (R$)', type: 'number', step: '0.01', required: true }
+      { name: 'ticker', label: 'Ticker', type: 'text', required: true, placeholder: 'GLD, GOLD11, IAU...', uppercase: true },
+      { name: 'name', label: 'Nome', type: 'text', placeholder: 'Ex: SPDR Gold Shares' },
+      { name: 'type', label: 'Tipo', type: 'select', options: ['ETF','BDR','Fundo','Físico'] },
+      { name: 'quantity', label: 'Cotas / Quantidade', type: 'number', step: '0.001', required: true },
+      { name: 'averagePrice', label: 'Preço Médio', type: 'number', step: '0.01', required: true, isCurrencyField: true }
     ]
   },
   etfs: {

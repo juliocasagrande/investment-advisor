@@ -146,7 +146,7 @@ class QuotesService {
       const alphaKey = settings.alphavantage_key || process.env.ALPHAVANTAGE_KEY;
 
       const assetsResult = await client.query(
-        'SELECT id, ticker, market FROM assets WHERE user_id = $1 AND quantity > 0',
+        'SELECT id, ticker, market, currency FROM assets WHERE user_id = $1 AND quantity > 0',
         [userId]
       );
 
@@ -155,7 +155,11 @@ class QuotesService {
 
       for (const asset of assets) {
         try {
-          const quote = await this.getQuote(asset.ticker, asset.market, brapiToken, alphaKey);
+          // Inferir mercado pela moeda caso o market salvo seja inconsistente (ex: metals USD cadastrados como BR)
+          const effectiveMarket = (asset.currency === 'USD' && (!asset.market || asset.market === 'BR'))
+            ? 'US'
+            : asset.market;
+          const quote = await this.getQuote(asset.ticker, effectiveMarket, brapiToken, alphaKey);
           
           if (quote && quote.price) {
             await client.query(`
