@@ -302,3 +302,14 @@ async function migrate() {
 }
 
 module.exports = { migrate };
+
+
+// Auto-execução quando rodado diretamente (npm run db:migrate)
+if (require.main === module) {
+  migrate()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('❌ Falha nas migrações:', err);
+      process.exit(1);
+    });
+}
