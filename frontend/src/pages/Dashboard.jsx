@@ -132,11 +132,15 @@ export default function Dashboard() {
   const recommendations = suggestions.map((s, i) => ({
     id: i,
     type: s.type === 'INCREASE' ? 'BUY' : s.type === 'REDUCE' ? 'SELL' : 'INFO',
-    title: s.type === 'INCREASE' ? 'Aumente ' + s.className : 'Reduza ' + s.className,
+    title: s.type === 'INCREASE'
+      ? '↑ Aportar em ' + s.className
+      : '↓ Reduzir ' + s.className,
     description: s.message,
     color: s.color,
     priority: s.priority,
-    difference: s.difference
+    difference: s.difference,
+    currentPct: s.currentPercentage,
+    targetPct: s.targetPercentage
   }));
 
   // Preparar dados para gráfico de alocação sugerida vs atual
@@ -286,8 +290,23 @@ export default function Dashboard() {
                 <div key={index} className={'p-3 rounded-xl flex items-start gap-3 ' + (rec.type === 'BUY' ? 'bg-emerald-500/10 border border-emerald-500/20' : rec.type === 'SELL' ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-blue-500/10 border border-blue-500/20')}>
                   {rec.type === 'BUY' ? <Zap className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" /> : rec.type === 'SELL' ? <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" /> : <Info className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />}
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-white text-sm">{rec.title}</p>
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium text-white text-sm">{rec.title}</p>
+                      {rec.priority === 'high' && (
+                        <span className="text-xs bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded ml-2 flex-shrink-0">Urgente</span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-400 mt-1">{rec.description}</p>
+                    {rec.currentPct !== undefined && (
+                      <div className="flex items-center gap-1.5 mt-1.5">
+                        <span className={"text-xs font-mono font-semibold " + (rec.type === 'SELL' ? 'text-amber-400' : 'text-red-400')}>{(rec.currentPct || 0).toFixed(1)}%</span>
+                        <span className="text-slate-600 text-xs">→</span>
+                        <span className="text-xs font-mono text-blue-400">{(rec.targetPct || 0).toFixed(1)}% target</span>
+                        <span className={"text-xs font-mono ml-1 " + (rec.type === 'SELL' ? 'text-amber-400' : 'text-emerald-400')}>
+                          {rec.type === 'SELL' ? '+' : ''}{(rec.difference || 0).toFixed(1)}%
+                        </span>
+                      </div>
+                    )}
                   </div>
                   <button onClick={() => dismissSuggestion(index)} className="text-slate-500 hover:text-white text-xs">✕</button>
                 </div>
