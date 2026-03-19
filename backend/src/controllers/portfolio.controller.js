@@ -2,7 +2,6 @@ const pool = require('../config/database');
 const rebalanceService = require('../services/rebalance.service');
 const macroService = require('../services/macro.service');
 const quotesService = require('../services/quotes.service');
-const currencyService = require('../services/currency.service');
 
 class PortfolioController {
   async getDashboard(req, res) {
@@ -30,9 +29,6 @@ class PortfolioController {
       // Gerar sugestões de rebalanceamento
       const suggestions = await rebalanceService.generateRebalanceSuggestions(userId);
 
-      // Cotação do dólar
-      const usdRate = await currencyService.getUsdToBrl();
-
       return res.json({
         summary: {
           totalValue: allocation.totalValue || 0,
@@ -43,7 +39,6 @@ class PortfolioController {
           annualIncome: passiveIncome.totalAnnual || 0,
           lastUpdate: lastUpdateResult.rows[0]?.last_update
         },
-        usdRate,
         allocation: allocation.allocation || [],
         passiveIncome: passiveIncome.breakdown || [],
         suggestions: suggestions || [],
@@ -132,9 +127,6 @@ class PortfolioController {
         await new Promise(r => setTimeout(r, 300));
       }
 
-      // Forçar atualização da cotação do dólar junto com o sync
-      await currencyService.forceRefresh();
-
       // Salvar snapshot no histórico
       const allocation = await rebalanceService.calculateAllocation(userId);
       
@@ -170,9 +162,12 @@ class PortfolioController {
 
   async getRebalance(req, res) {
     try {
-      const suggestions = await rebalanceService.generateRebalanceSuggestions(req.userId);
-      const allocation = await rebalanceService.calculateAllocation(req.userId);
-      return res.json({ allocation, suggestions });
+      const [suggestions, allocation, intraClass] = await Promise.all([
+        rebalanceService.generateRebalanceSuggestions(req.userId),
+        rebalanceService.calculateAllocation(req.userId),
+        rebalanceService.generateIntraClassSuggestions(req.userId)
+      ]);
+      return res.json({ allocation, suggestions, intraClass });
     } catch (error) {
       console.error('Erro ao buscar sugestões:', error);
       return res.status(500).json({ error: 'Erro interno do servidor' });

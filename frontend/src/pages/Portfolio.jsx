@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { portfolioService, classesService, assetsService } from '../services/api';
 import {
   PieChart, Target, TrendingUp, TrendingDown, Edit2, Save, X,
-  Calculator, Zap, AlertTriangle, CheckCircle, ArrowRight
+  Calculator, Zap, AlertTriangle, CheckCircle, ArrowRight,
+  BarChart2, ArrowRightLeft, ChevronsUpDown
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
@@ -18,6 +19,7 @@ export default function Portfolio() {
   const [contributionAmount, setContributionAmount] = useState('');
   const [contributionTargets, setContributionTargets] = useState([]);
   const [macroAnalysis, setMacroAnalysis] = useState(null);
+  const [intraClass, setIntraClass] = useState([]);
 
   useEffect(() => {
     loadData();
@@ -38,6 +40,7 @@ export default function Portfolio() {
       setClasses(classesRes.data?.classes || []);
       setAssets(assetsRes.data?.assets || []);
       setMacroAnalysis(macroRes.data);
+      setIntraClass(rebalanceRes.data?.intraClass || []);
     } catch (error) {
       console.error('Erro ao carregar dados:', error);
       toast.error('Erro ao carregar dados');
@@ -492,6 +495,118 @@ export default function Portfolio() {
           </div>
         )}
       </div>
+
+      {/* Intra-Class Distribution */}
+      {intraClass.length > 0 && (
+        <div className="card p-5">
+          <div className="flex items-center gap-2 mb-1">
+            <BarChart2 className="w-5 h-5 text-blue-400" />
+            <h3 className="font-semibold text-white">Distribuição Interna das Classes</h3>
+          </div>
+          <p className="text-sm text-slate-400 mb-5">
+            Cada ativo deve ter peso igual dentro da sua classe. Classes em desequilíbrio estão destacadas.
+          </p>
+          <div className="space-y-5">
+            {intraClass.map((cls) => (
+              <div key={cls.classId} className="bg-slate-800/50 rounded-xl border border-slate-700/50 overflow-hidden">
+                {/* Class header */}
+                <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-700/50">
+                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cls.color || '#3B82F6' }} />
+                  <span className="font-semibold text-white">{cls.className}</span>
+                  <span className="text-xs text-slate-500">ideal: {cls.idealPct}% por ativo</span>
+                  <span className="ml-auto text-xs text-amber-400 flex items-center gap-1">
+                    <ChevronsUpDown className="w-3 h-3" />
+                    desequilíbrio detectado
+                  </span>
+                </div>
+
+                {/* Asset bars */}
+                <div className="px-4 py-3 space-y-2.5">
+                  {cls.assets.map((asset) => (
+                    <div key={asset.id}>
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-mono font-semibold ${
+                            asset.status === 'over'  ? 'text-amber-400' :
+                            asset.status === 'under' ? 'text-red-400'   : 'text-slate-300'
+                          }`}>{asset.ticker}</span>
+                          <span className="text-slate-500">{formatCurrency(asset.value)}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`${
+                            asset.status === 'over'  ? 'text-amber-400' :
+                            asset.status === 'under' ? 'text-red-400'   : 'text-emerald-400'
+                          }`}>{asset.currentPct}%</span>
+                          <span className="text-slate-600">/ {asset.idealPct}% ideal</span>
+                          {asset.status !== 'ok' && (
+                            <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                              asset.status === 'over'
+                                ? 'bg-amber-500/15 text-amber-400'
+                                : 'bg-red-500/15 text-red-400'
+                            }`}>
+                              {asset.deviation > 0 ? '+' : ''}{asset.deviation}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {/* Progress bar */}
+                      <div className="relative h-2 bg-slate-700 rounded-full overflow-hidden">
+                        {/* ideal marker */}
+                        <div
+                          className="absolute top-0 bottom-0 w-0.5 bg-slate-500 z-10"
+                          style={{ left: `${cls.idealPct}%` }}
+                        />
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            asset.status === 'over'  ? 'bg-amber-500' :
+                            asset.status === 'under' ? 'bg-red-500'   : 'bg-emerald-500'
+                          }`}
+                          style={{ width: `${Math.min(asset.currentPct, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Transfers */}
+                {cls.transfers.length > 0 && (
+                  <div className="px-4 py-3 bg-slate-900/40 border-t border-slate-700/40 space-y-1.5">
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                      <ArrowRightLeft className="w-3.5 h-3.5" />
+                      Realocação sugerida (vender / reduzir posição)
+                    </p>
+                    {cls.transfers.map((t, i) => (
+                      <div key={i} className="flex items-center gap-2 text-sm">
+                        <span className="font-mono text-amber-400 font-semibold">{t.from}</span>
+                        <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
+                        <span className="font-mono text-emerald-400 font-semibold">{t.to}</span>
+                        <span className="ml-auto font-mono text-white">{formatCurrency(t.value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Contributions */}
+                {cls.contributions.length > 0 && (
+                  <div className="px-4 py-3 bg-emerald-900/10 border-t border-emerald-700/20 space-y-1.5">
+                    <p className="text-xs font-medium text-emerald-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                      <TrendingUp className="w-3.5 h-3.5" />
+                      Aporte para equilibrar (sem precisar vender)
+                    </p>
+                    {cls.contributions.map((c, i) => (
+                      <div key={i} className="flex items-center gap-2 text-sm">
+                        <span className="font-mono text-emerald-400 font-semibold">{c.ticker}</span>
+                        <span className="text-slate-500 text-xs">{c.currentPct}% → {c.idealPct}% ideal</span>
+                        <span className="ml-auto font-mono text-emerald-400 font-semibold">{formatCurrency(c.value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Suggestions */}
       {displaySuggestions.length > 0 && (
