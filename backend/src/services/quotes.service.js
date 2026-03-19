@@ -5,6 +5,68 @@ class QuotesService {
   constructor() {
     this.brapiBaseUrl = 'https://brapi.dev/api';
     this.alphaVantageBaseUrl = 'https://www.alphavantage.co/query';
+    // Yahoo Finance state (compartilhado com screener)
+    this._yahooCookie = null;
+    this._yahooCrumb  = null;
+    this._yahooLastFetch = 0;
+    this._yahooHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Origin': 'https://finance.yahoo.com',
+      'Referer': 'https://finance.yahoo.com/',
+    };
+  }
+
+  // Obter cookie+crumb do Yahoo Finance
+  async _getYahooCrumb(force = false) {
+    const CRUMB_TTL = 55 * 60 * 1000; // 55 min
+    const now = Date.now();
+    if (!force && this._yahooCrumb && (now - this._yahooLastFetch) < CRUMB_TTL) {
+      return { cookie: this._yahooCookie, crumb: this._yahooCrumb };
+    }
+    const cookieRes = await fetch('https://fc.yahoo.com', { headers: this._yahooHeaders, redirect: 'follow' });
+    const cookieStr = (cookieRes.headers.get('set-cookie') || '').split(',').map(c => c.split(';')[0].trim()).filter(Boolean).join('; ');
+    const crumbRes = await fetch('https://query2.finance.yahoo.com/v1/test/getcrumb', {
+      headers: { ...this._yahooHeaders, 'Cookie': cookieStr }
+    });
+    const crumb = await crumbRes.text();
+    this._yahooCookie = cookieStr;
+    this._yahooCrumb  = crumb;
+    this._yahooLastFetch = now;
+    return { cookie: cookieStr, crumb };
+  }
+
+  // Buscar cotação US via Yahoo Finance (preço intraday real)
+  async getUSQuoteFromYahoo(ticker) {
+    try {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const { cookie, crumb } = await this._getYahooCrumb(attempt === 2);
+        const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=price,summaryDetail&crumb=${encodeURIComponent(crumb)}&formatted=false&corsDomain=finance.yahoo.com`;
+        const res = await fetch(url, { headers: { ...this._yahooHeaders, 'Cookie': cookie } });
+        if (res.status === 401 && attempt === 1) { continue; }
+        if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
+        const data = await res.json();
+        const result = data?.quoteSummary?.result?.[0];
+        if (!result) throw new Error('Sem dados Yahoo');
+        const price = result.price;
+        return {
+          ticker: price.symbol,
+          price: price.regularMarketPrice,
+          changePercent: price.regularMarketChangePercent * 100,
+          previousClose: price.regularMarketPreviousClose,
+          open: price.regularMarketOpen,
+          high: price.regularMarketDayHigh,
+          low: price.regularMarketDayLow,
+          volume: price.regularMarketVolume,
+          dividendYield: result.summaryDetail?.trailingAnnualDividendYield || null,
+          market: 'US',
+        };
+      }
+    } catch (error) {
+      console.warn(`[Yahoo] Falha ao buscar ${ticker}:`, error.message);
+      return null;
+    }
   }
 
   // Buscar cotação brasileira via Brapi
@@ -114,13 +176,17 @@ class QuotesService {
     if (market === 'BR' || ticker.match(/\d+$/)) {
       return await this.getBrazilianQuote(ticker, brapiToken);
     } else {
+      // Yahoo Finance como fonte primária para ativos US (preço intraday real)
+      const yahooQuote = await this.getUSQuoteFromYahoo(ticker);
+      if (yahooQuote && yahooQuote.price) {
+        return yahooQuote;
+      }
+      // Fallback: Alpha Vantage
+      console.warn(`[Quotes] Yahoo falhou para ${ticker}, tentando Alpha Vantage...`);
       const quote = await this.getGlobalQuote(ticker, alphaVantageKey);
       if (quote && alphaVantageKey) {
-        // Tentar enriquecer com overview
         const overview = await this.getUSOverview(ticker, alphaVantageKey);
-        if (overview) {
-          return { ...quote, ...overview };
-        }
+        if (overview) return { ...quote, ...overview };
       }
       return quote;
     }
